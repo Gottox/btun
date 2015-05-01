@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <ev.h>
 #include <arpa/inet.h>
+#include <stdint.h>
 
 #define FIL(x) \
 	extern char _binary_ ## x ## _start[]; \
@@ -28,16 +29,22 @@ struct HttpData {
 };
 
 struct Frame {
-	unsigned long seq;
-	struct Frame *next;
-	unsigned int ref;
-	size_t size;
+	uint32_t seq;
+	uint16_t size;
 	unsigned char buffer[FRAMESIZ];
 };
 
 struct WsData {
-	struct Frame *frame;
-	size_t offset;
+	size_t sendoff;
+	struct FrameList *send;
+	size_t recoff;
+	struct Frame rec;
+};
+
+struct FrameList {
+	unsigned int ref;
+	struct FrameList *next;
+	struct Frame frame;
 };
 
 /* FUNCTIONS */
@@ -46,11 +53,11 @@ static int wsinit();
 static int run();
 static int sendheader(struct libwebsocket *wsi, struct HttpData *data);
 static int senddata(struct libwebsocket *wsi, struct HttpData *data);
-static callback_http(struct libwebsocket_context *context,
+static int callback_http(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len);
-static callback_ws(struct libwebsocket_context *context,
+static int callback_ws(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len);
@@ -65,8 +72,8 @@ ev_io tunwatcher;
 struct ev_loop *loop;
 static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
-static struct Frame *frames = NULL, *lastFrame = NULL;
-unsigned long sendseq = 0, recseq = 0;
+static struct FrameList *frames = NULL, *lastFrame = NULL;
+uint32_t sendseq = 0, recseq = 0;
 
 static struct libwebsocket_protocols protocols[] = {
 	{
@@ -184,7 +191,7 @@ senddata(struct libwebsocket *wsi, struct HttpData *data) {
 
 void
 cleanframes() {
-	struct Frame *frame;
+	struct FrameList *frame;
 	int i = 0;
 	while(frames && frames->ref == 0) {
 		i++;
@@ -204,45 +211,63 @@ callback_ws(struct libwebsocket_context *context,
 		void *in, size_t len) {
 	struct WsData *data = (struct WsData *)user;
 	int sent = 0;
-	unsigned long seq;
-	unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + sizeof(long) + FRAMESIZ + LWS_SEND_BUFFER_POST_PADDING];
+	unsigned buf[LWS_SEND_BUFFER_PRE_PADDING + sizeof(struct Frame) +
+		LWS_SEND_BUFFER_POST_PADDING];
+	struct Frame *frame = (struct Frame* )&buf[LWS_SEND_BUFFER_PRE_PADDING];
 
 	switch(reason) {
 	case LWS_CALLBACK_ESTABLISHED:
 		bzero(data, sizeof(struct WsData));
 		break;
 	case LWS_CALLBACK_SERVER_WRITEABLE:
-		if(data->frame == NULL && frames != NULL) {
-			data->frame = frames;
-			data->frame->ref++;
+		if(data->send == NULL && frames != NULL) {
+			data->send = frames;
+			data->send->ref++;
 		}
 
-		while(data->frame) {
-			memcpy(buf + LWS_SEND_BUFFER_PRE_PADDING,
-					&data->frame->seq, sizeof(long));
-			memcpy(buf + LWS_SEND_BUFFER_PRE_PADDING + sizeof(long),
-					data->frame->buffer + data->offset,
-					data->frame->size - data->offset);
-			sent = libwebsocket_write(wsi, buf,
-					data->frame->size - data->offset, LWS_WRITE_BINARY);
+		while(data->send) {
+			frame->seq = htonl(data->send->frame.seq);
+			frame->size = htons(data->send->frame.size);
+			memcpy(frame->buffer, data->send->frame.buffer + data->sendoff,
+					data->send->frame.size - data->sendoff);
+			sent = libwebsocket_write(wsi, (unsigned char *)frame,
+					data->send->frame.size - data->sendoff, LWS_WRITE_BINARY);
 			if(sent < 0)
 				return -1;
-			data->offset += sent;
+			data->sendoff += sent;
 			// Buffer could be sent completely
 			// break here and wait till websocket gets
 			// writable again.
-			if(data->offset < data->frame->size)
+			if(data->sendoff < data->send->frame.size)
 				break;
 
 			// Skip to next buffer
-			data->frame->ref--;
-			data->frame = data->frame->next;
-			if(data->frame)
-				data->frame->ref++;
-			data->offset = 0;
+			data->send->ref--;
+			data->send = data->send->next;
+			if(data->send)
+				data->send->ref++;
+			data->sendoff = 0;
 		}
 
 		cleanframes();
+		break;
+	case LWS_CALLBACK_RECEIVE:
+		frame = in;
+		data->rec.seq = ntohl(frame->seq);
+		data->rec.size = ntohs(frame->size);
+		len -= sizeof(uint32_t) + sizeof(uint16_t);
+
+		// TODO check for out of bounds
+		memcpy(data->rec.buffer + data->recoff, frame->buffer, len);
+		data->recoff += len;
+		// TODO check if we haven't reached the seq yet
+		if(data->recoff >= data->rec.size) {
+			write(tunfd, data->rec.buffer, data->rec.size);
+		}
+		// TODO
+		//if (strcmp((const char *)in, "reset\n") == 0)
+		//	pss->number = 0;
+		break;
 	}
 	return 0;
 }
@@ -295,17 +320,17 @@ callback_http(struct libwebsocket_context *context,
 void
 callback_tun(EV_P_ ev_io *w, int revents) {
 	int n;
-	struct Frame *frame;
+	struct FrameList *frame;
 
 	if (revents & EV_READ) {
-		frame = calloc(1, sizeof(struct Frame));
-		n = read(tunfd, frame->buffer, FRAMESIZ);
+		frame = calloc(1, sizeof(struct FrameList));
+		n = read(tunfd, frame->frame.buffer, FRAMESIZ);
 		if(n < 0) {
 			perror("read");
 			return;
 		}
-		frame->size = n;
-		frame->seq = htonl(++sendseq);
+		frame->frame.size = n;
+		frame->frame.seq = ++sendseq;
 		if(lastFrame) {
 			lastFrame->next = frame;
 			lastFrame = frame;
