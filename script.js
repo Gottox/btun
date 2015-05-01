@@ -15,7 +15,7 @@ function setup(ii, addr) {
 	}
 	sock.onmessage = function(ev) {
 		for(i = 0; i < socks.length; i++) {
-			f(i != ii && socks[i] && socks[i].readyState==1)
+			if(i != ii && socks[i] && socks[i].readyState==1)
 				socks[i].send(ev.data);
 		}
 	};
