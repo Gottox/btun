@@ -10,13 +10,16 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <ev.h>
+#include <arpa/inet.h>
 
 #define FIL(x) \
 	extern char _binary_ ## x ## _start[]; \
 	extern void *_binary_ ## x ## _size; \
 	char *x = _binary_ ## x ## _start; \
 	size_t x ## N = (size_t)&_binary_ ## x ## _size;
+#define FRAMESIZ 1500
 
+/* STRUCTS */
 struct HttpData {
 	char *type;
 	int position;
@@ -25,15 +28,24 @@ struct HttpData {
 };
 
 struct Frame {
-	long seq;
+	unsigned long seq;
+	struct Frame *next;
 	unsigned int ref;
-	unsigned int size;
-	unsigned char buffer[0];
+	size_t size;
+	unsigned char buffer[FRAMESIZ];
 };
 
+struct WsData {
+	struct Frame *frame;
+	size_t offset;
+};
+
+/* FUNCTIONS */
 static int tunalloc();
 static int wsinit();
 static int run();
+static int sendheader(struct libwebsocket *wsi, struct HttpData *data);
+static int senddata(struct libwebsocket *wsi, struct HttpData *data);
 static callback_http(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
@@ -42,18 +54,19 @@ static callback_ws(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len);
-
+static void cleanframes();
 static void callback_tun(EV_P_ ev_io *w, int revents);
+static int setupFiles();
 
+/* GLOBALS */
 static char *local = "/", *remote = NULL, *wsbind = NULL;
 static int wsport, tunfd;
 ev_io tunwatcher;
 struct ev_loop *loop;
 static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
-
-FIL(index_html)
-FIL(script_js)
+static struct Frame *frames = NULL, *lastFrame = NULL;
+unsigned long sendseq = 0, recseq = 0;
 
 static struct libwebsocket_protocols protocols[] = {
 	{
@@ -65,12 +78,16 @@ static struct libwebsocket_protocols protocols[] = {
 	{
 		.name = "ws",
 		.callback = callback_ws,
-		.per_session_data_size = sizeof(struct HttpData),
+		.per_session_data_size = sizeof(struct WsData),
 		.rx_buffer_size = 0
 	},
 	{ 0 }
 };
 
+FIL(index_html)
+FIL(script_js)
+
+/* IMPLEMENTATION */
 
 int
 tunalloc() {
@@ -165,12 +182,68 @@ senddata(struct libwebsocket *wsi, struct HttpData *data) {
 			LWS_WRITE_HTTP) < 0;
 }
 
+void
+cleanframes() {
+	struct Frame *frame;
+	int i = 0;
+	while(frames && frames->ref == 0) {
+		i++;
+		frame = frames;
+		frames = frames->next;
+		free(frame);
+	}
+	if(frames == NULL)
+		lastFrame = NULL;
+	printf("%i frames cleaned", i);
+}
+
 int
 callback_ws(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len) {
-	puts("WS_HANDLER");
+	struct WsData *data = (struct WsData *)user;
+	int sent = 0;
+	unsigned long seq;
+	unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + sizeof(long) + FRAMESIZ + LWS_SEND_BUFFER_POST_PADDING];
+
+	switch(reason) {
+	case LWS_CALLBACK_ESTABLISHED:
+		bzero(data, sizeof(struct WsData));
+		break;
+	case LWS_CALLBACK_SERVER_WRITEABLE:
+		if(data->frame == NULL && frames != NULL) {
+			data->frame = frames;
+			data->frame->ref++;
+		}
+
+		while(data->frame) {
+			memcpy(buf + LWS_SEND_BUFFER_PRE_PADDING,
+					&data->frame->seq, sizeof(long));
+			memcpy(buf + LWS_SEND_BUFFER_PRE_PADDING + sizeof(long),
+					data->frame->buffer + data->offset,
+					data->frame->size - data->offset);
+			sent = libwebsocket_write(wsi, buf,
+					data->frame->size - data->offset, LWS_WRITE_BINARY);
+			if(sent < 0)
+				return -1;
+			data->offset += sent;
+			// Buffer could be sent completely
+			// break here and wait till websocket gets
+			// writable again.
+			if(data->offset < data->frame->size)
+				break;
+
+			// Skip to next buffer
+			data->frame->ref--;
+			data->frame = data->frame->next;
+			if(data->frame)
+				data->frame->ref++;
+			data->offset = 0;
+		}
+
+		cleanframes();
+	}
 	return 0;
 }
 
@@ -184,9 +257,11 @@ callback_http(struct libwebsocket_context *context,
 	switch (reason) {
 	case LWS_CALLBACK_CLIENT_WRITEABLE:
 		printf("connection established\n");
+		break;
 
 	case LWS_CALLBACK_HTTP:
 		printf("requested URI: %s\n", (char *)in);
+		break;
 
 		data->position = 0;
 		if(strcmp(in, "/") == 0) {
@@ -219,12 +294,29 @@ callback_http(struct libwebsocket_context *context,
 
 void
 callback_tun(EV_P_ ev_io *w, int revents) {
-	puts("io on tun");
+	int n;
+	struct Frame *frame;
 
-	
+	if (revents & EV_READ) {
+		frame = calloc(1, sizeof(struct Frame));
+		n = read(tunfd, frame->buffer, FRAMESIZ);
+		if(n < 0) {
+			perror("read");
+			return;
+		}
+		frame->size = n;
+		frame->seq = htonl(++sendseq);
+		if(lastFrame) {
+			lastFrame->next = frame;
+			lastFrame = frame;
+		}
+		else {
+			lastFrame = frames = frame;
+		}
 
-	// Unregister listener until data are sent.
-	ev_io_stop(loop, &tunwatcher);
+		// request a write slot on all clients
+		libwebsocket_callback_on_writable_all_protocol(&protocols[1]);
+	}
 }
 
 int
@@ -273,7 +365,7 @@ usage:
 		default:
 			fprintf(stderr,
 					"Usage: %s [-l local] [-s remote] [-t tundev] [bind_address] port\n",
-					argv[0], argv[0], argv[0]);
+					argv[0]);
 			return EXIT_FAILURE;
 		}
 	}
