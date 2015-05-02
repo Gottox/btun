@@ -1,11 +1,11 @@
-SRC = pbp.c
+SRC = btun.c
 OBJ = index.o script.o
 LIBS = -lwebsockets -lev
 
-all: pbp
+all: btun
 
-pbp: pbp.c $(OBJ)
-	$(CC) -o $@ $(LIBS) $(CFLAGS) $(LDFLAGS) $< $(OBJ)
+btun: $(SRC) $(OBJ)
+	$(CC) -o $@ $(LIBS) $(CFLAGS) $(LDFLAGS) $(SRC) $(OBJ)
 
 index.o: index.html
 	$(LD) $(LDFLAGS) -r -b binary -o $@ $<
@@ -14,6 +14,6 @@ script.o: script.js
 	$(LD) $(LDFLAGS) -r -b binary -o $@ $<
 
 clean:
-	rm -f *.o pbp
+	rm -f *.o btun
 
 .PHONY: clean

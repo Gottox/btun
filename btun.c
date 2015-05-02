@@ -12,6 +12,7 @@
 #include <ev.h>
 #include <arpa/inet.h>
 #include <stdint.h>
+#include "portable_endian.h"
 
 #define FIL(x) \
 	extern char _binary_ ## x ## _start[]; \
@@ -19,7 +20,7 @@
 	char *x = _binary_ ## x ## _start; \
 	size_t x ## N = (size_t)&_binary_ ## x ## _size;
 #define FRAMESIZ 1500
-#define MAGIC "PBP"
+#define MAGIC "BTuN"
 
 /* STRUCTS */
 struct HttpData {
@@ -31,13 +32,14 @@ struct HttpData {
 };
 
 struct Frame {
-	char magic[4];
-	uint32_t seq;
+	char magic[5];
+	uint64_t seq;
 	uint16_t size;
 	unsigned char buffer[FRAMESIZ];
 };
 
 struct WsData {
+	uint64_t seq;
 	size_t sendoff;
 	struct FrameList *send;
 	size_t recoff;
@@ -77,7 +79,7 @@ struct ev_loop *loop;
 static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
 static struct FrameList *frames = NULL, *lastFrame = NULL;
-uint32_t sendseq = 0, recseq = 0;
+uint64_t sendseq = 0, recseq = 0;
 
 static struct libwebsocket_protocols protocols[] = {
 	{
@@ -232,7 +234,7 @@ callback_ws(struct libwebsocket_context *context,
 		}
 
 		while(data->send) {
-			frame->seq = htonl(data->send->frame.seq);
+			frame->seq = htobe64(data->send->frame.seq);
 			frame->size = htons(data->send->frame.size);
 			memcpy(frame->buffer, data->send->frame.buffer + data->sendoff,
 					data->send->frame.size - data->sendoff);
@@ -268,13 +270,17 @@ callback_ws(struct libwebsocket_context *context,
 		break;
 	case LWS_CALLBACK_RECEIVE:
 		frame = in;
-		data->rec.seq = ntohl(frame->seq);
+		if(strcmp(MAGIC, frame->magic) != 0) {
+			printd("invalid magic: drop frame");
+			break;
+		}
+		data->rec.seq = data->rec.seq = be64toh(frame->seq);
 		data->rec.size = ntohs(frame->size);
 		printd("frame received: payload: %d, received: %d", data->rec.size, len);
 		len -= sizeof(struct Frame) - FRAMESIZ;
 
 		if(data->rec.seq <= recseq) {
-			printd("old sequence number: dropping frame");
+			printd("old sequence number: drop frame");
 			data->recoff = 0;
 			break;
 		}
