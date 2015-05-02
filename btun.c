@@ -433,14 +433,13 @@ setupfiles() {
 	if(local != NULL)
 		len += strlen(local);
 
-	if(!(p = malloc((len+1) * sizeof(char)))) {
-		perror("malloc");
+	if(!(p = calloc(len+1, sizeof(char)))) {
+		perror("calloc");
 		return -1;
 	}
 
-	snprintf(p, len+1, script_js, remote?remote:"", local?local:"");
+	script_jsN = snprintf(p, len+1, script_js, remote?remote:"", local?local:"");
 	script_js = p;
-	script_jsN = strlen(p);
 
 	return 0;
 }
