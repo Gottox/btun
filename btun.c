@@ -17,8 +17,8 @@
 #define FIL(x) \
 	extern char _binary_ ## x ## _start[]; \
 	extern void *_binary_ ## x ## _size; \
-	char *x = _binary_ ## x ## _start; \
-	size_t x ## N = (size_t)&_binary_ ## x ## _size;
+	static char *x = _binary_ ## x ## _start; \
+	static size_t x ## N = (size_t)&_binary_ ## x ## _size;
 #define FRAMESIZ 1504
 #define MAGIC "BTuN"
 
@@ -75,13 +75,12 @@ static int sendheader(struct libwebsocket *wsi, struct HttpData *data);
 static char *local = "/", *remote = NULL, *wsbind = NULL;
 static int wsport, infd, outfd, debug = 0;
 ev_io tunwatcher;
-struct ev_loop *loop;
+static struct ev_loop *loop;
 static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
 static struct FrameList *frames = NULL, *lastFrame = NULL;
-uint64_t sendseq = 0, recseq = 0;
-int connections = 0;
-
+static uint64_t sendseq = 0, recseq = 0;
+static int connections = 0;
 static struct libwebsocket_protocols protocols[] = {
 	{
 		.name = "http-only",
