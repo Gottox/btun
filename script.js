@@ -11,7 +11,10 @@ function setup(ii, addr) {
 	try {
 		sock = new WebSocket(addr, "ws");
 	} catch(e) {
-		setup(ii, addr);
+		console.log(e);
+		return setTimeout(function() {
+			setup(ii, addr);
+		}, 500);
 	}
 	sock.onmessage = function(ev) {
 		for(i = 0; i < socks.length; i++) {
