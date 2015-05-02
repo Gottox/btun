@@ -19,7 +19,7 @@
 	extern void *_binary_ ## x ## _size; \
 	char *x = _binary_ ## x ## _start; \
 	size_t x ## N = (size_t)&_binary_ ## x ## _size;
-#define FRAMESIZ 1500
+#define FRAMESIZ 1504
 #define MAGIC "BTuN"
 
 /* STRUCTS */
@@ -80,6 +80,7 @@ static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
 static struct FrameList *frames = NULL, *lastFrame = NULL;
 uint64_t sendseq = 0, recseq = 0;
+int connections = 0;
 
 static struct libwebsocket_protocols protocols[] = {
 	{
@@ -224,7 +225,8 @@ callback_ws(struct libwebsocket_context *context,
 	switch(reason) {
 	case LWS_CALLBACK_ESTABLISHED:
 		bzero(data, sizeof(struct WsData));
-		printd("new connection");
+		connections++;
+		printd("new connection: %d clients connected", connections);
 		break;
 	case LWS_CALLBACK_SERVER_WRITEABLE:
 		printd("client is writable");
@@ -293,16 +295,25 @@ callback_ws(struct libwebsocket_context *context,
 		if(data->recoff >= data->rec.size) {
 			data->recoff = 0;
 			recseq = data->rec.seq;
-			write(outfd, data->rec.buffer, data->rec.size);
-			printd("frame received");
+			sent = write(outfd, data->rec.buffer, data->rec.size);
+			if(sent < 0) {
+				perror("write");
+				return -1;
+			}
+			printd("frame received: size: %d, written: %d", data->rec.size, sent);
 		}
 		break;
 	case LWS_CALLBACK_CLOSED:
-		printd("closing connection");
 		if(data->send) {
 			data->send->ref--;
 		}
 		cleanframes();
+		connections--;
+		printd("closing connection: %d clients connected", connections);
+		if(connections == 0) {
+			printd("no connections left, resetting message sequence");
+			sendseq = recseq = 0;
+		}
 		break;
 	case LWS_CALLBACK_ADD_POLL_FD:
 	case LWS_CALLBACK_DEL_POLL_FD:
