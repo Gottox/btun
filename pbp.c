@@ -19,16 +19,19 @@
 	char *x = _binary_ ## x ## _start; \
 	size_t x ## N = (size_t)&_binary_ ## x ## _size;
 #define FRAMESIZ 1500
+#define MAGIC "PBP"
 
 /* STRUCTS */
 struct HttpData {
 	char *type;
+	int code;
 	int position;
 	unsigned int size;
 	char *buffer;
 };
 
 struct Frame {
+	char magic[4];
 	uint32_t seq;
 	uint16_t size;
 	unsigned char buffer[FRAMESIZ];
@@ -63,11 +66,12 @@ static int callback_ws(struct libwebsocket_context *context,
 		void *in, size_t len);
 static void cleanframes();
 static void callback_tun(EV_P_ ev_io *w, int revents);
-static int setupFiles();
+static int setupfiles();
+static void printd(const char *format, ...);
 
 /* GLOBALS */
 static char *local = "/", *remote = NULL, *wsbind = NULL;
-static int wsport, tunfd;
+static int wsport, infd, outfd, debug = 0;
 ev_io tunwatcher;
 struct ev_loop *loop;
 static struct libwebsocket_context *context;
@@ -114,7 +118,7 @@ tunalloc() {
 		return -1;
 	}
 
-	tunfd = fd;
+	infd = outfd = fd;
 	return 0;
 }
 
@@ -139,7 +143,7 @@ wsinit() {
 int
 run() {
 	struct ev_loop *loop = ev_default_loop(0);
-	ev_io_init(&tunwatcher, callback_tun, tunfd, EV_READ);
+	ev_io_init(&tunwatcher, callback_tun, infd, EV_READ);
 	ev_io_start(loop, &tunwatcher);
 
 	libwebsocket_initloop(context, loop);
@@ -154,7 +158,7 @@ sendheader(struct libwebsocket *wsi, struct HttpData *data) {
 	unsigned char *end = &buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ];
 	unsigned char *p = &buf[LWS_SEND_BUFFER_PRE_PADDING];
 
-	if(lws_add_http_header_status(context, wsi, 200, &p, end))
+	if(lws_add_http_header_status(context, wsi, data->code, &p, end))
 		return 1;
 	if (lws_add_http_header_by_token(context, wsi,
 				WSI_TOKEN_HTTP_SERVER,
@@ -201,7 +205,7 @@ cleanframes() {
 	}
 	if(frames == NULL)
 		lastFrame = NULL;
-	printf("%i frames cleaned", i);
+	printd("%i frames cleaned", i);
 }
 
 int
@@ -218,8 +222,10 @@ callback_ws(struct libwebsocket_context *context,
 	switch(reason) {
 	case LWS_CALLBACK_ESTABLISHED:
 		bzero(data, sizeof(struct WsData));
+		printd("new connection");
 		break;
 	case LWS_CALLBACK_SERVER_WRITEABLE:
+		printd("client is writable");
 		if(data->send == NULL && frames != NULL) {
 			data->send = frames;
 			data->send->ref++;
@@ -231,12 +237,21 @@ callback_ws(struct libwebsocket_context *context,
 			memcpy(frame->buffer, data->send->frame.buffer + data->sendoff,
 					data->send->frame.size - data->sendoff);
 			sent = libwebsocket_write(wsi, (unsigned char *)frame,
+					sizeof(struct Frame) - FRAMESIZ +
 					data->send->frame.size - data->sendoff, LWS_WRITE_BINARY);
-			if(sent < 0)
+			if(sent < 0) {
+				printd("write failed. closing connection.");
 				return -1;
-			data->sendoff += sent;
-			// Buffer could be sent completely
-			// break here and wait till websocket gets
+			} else if(sent <= sizeof(struct Frame) - FRAMESIZ) {
+				printd("short write. closing connection.");
+				return -1;
+			}
+
+			printd("frame sent: payload: %d, sent: %d", data->send->frame.size, sent);
+			data->sendoff += sent - (sizeof(struct Frame) - FRAMESIZ);
+
+			// libwebsocket_write could send partial data
+			// If so break here and wait till websocket gets
 			// writable again.
 			if(data->sendoff < data->send->frame.size)
 				break;
@@ -255,18 +270,30 @@ callback_ws(struct libwebsocket_context *context,
 		frame = in;
 		data->rec.seq = ntohl(frame->seq);
 		data->rec.size = ntohs(frame->size);
-		len -= sizeof(uint32_t) + sizeof(uint16_t);
+		printd("frame received: payload: %d, received: %d", data->rec.size, len);
+		len -= sizeof(struct Frame) - FRAMESIZ;
 
-		// TODO check for out of bounds
+		if(data->rec.seq <= recseq) {
+			printd("old sequence number: dropping frame");
+			data->recoff = 0;
+			break;
+		}
+
 		memcpy(data->rec.buffer + data->recoff, frame->buffer, len);
 		data->recoff += len;
-		// TODO check if we haven't reached the seq yet
 		if(data->recoff >= data->rec.size) {
-			write(tunfd, data->rec.buffer, data->rec.size);
+			data->recoff = 0;
+			recseq = data->rec.seq;
+			write(outfd, data->rec.buffer, data->rec.size);
+			printd("frame received");
 		}
-		// TODO
-		//if (strcmp((const char *)in, "reset\n") == 0)
-		//	pss->number = 0;
+		break;
+	case LWS_CALLBACK_CLOSED:
+		printd("closing connection");
+		if(data->send) {
+			data->send->ref--;
+		}
+		cleanframes();
 		break;
 	}
 	return 0;
@@ -280,21 +307,22 @@ callback_http(struct libwebsocket_context *context,
 	struct HttpData *data = (struct HttpData *)user;
 
 	switch (reason) {
-	case LWS_CALLBACK_CLIENT_WRITEABLE:
-		printf("connection established\n");
-		break;
-
 	case LWS_CALLBACK_HTTP:
-		printf("requested URI: %s\n", (char *)in);
-		break;
-
+		printd("http: requested URI: %s", (char *)in);
 		data->position = 0;
-		if(strcmp(in, "/") == 0) {
+		data->code = 404;
+		data->buffer = "404 - Not found";
+		data->size = strlen(data->buffer);
+		data->type = "text/plain";
+		if(remote == NULL) {
+			// always return 404 if remote is undefined
+		} else if(strcmp(in, "/") == 0) {
+			data->code = 200;
 			data->buffer = index_html;
 			data->size = index_htmlN;
 			data->type = "text/html";
-		}
-		else {
+		} else if(strcmp(in, "/script.js") == 0){
+			data->code = 200;
 			data->buffer = script_js;
 			data->size = script_jsN;
 			data->type = "application/javascript";
@@ -310,7 +338,7 @@ callback_http(struct libwebsocket_context *context,
 		senddata(wsi, data);
 		break;
 	default:
-		printf("unhandled callback %i\n", reason);
+		printd("unhandled callback %i", reason);
 		break;
 	}
 
@@ -324,11 +352,12 @@ callback_tun(EV_P_ ev_io *w, int revents) {
 
 	if (revents & EV_READ) {
 		frame = calloc(1, sizeof(struct FrameList));
-		n = read(tunfd, frame->frame.buffer, FRAMESIZ);
+		n = read(infd, frame->frame.buffer, FRAMESIZ);
 		if(n < 0) {
 			perror("read");
-			return;
+			exit(EXIT_FAILURE);
 		}
+		strcpy(frame->frame.magic, MAGIC);
 		frame->frame.size = n;
 		frame->frame.seq = ++sendseq;
 		if(lastFrame) {
@@ -345,7 +374,7 @@ callback_tun(EV_P_ ev_io *w, int revents) {
 }
 
 int
-setupFiles() {
+setupfiles() {
 	int len;
 	char *p;
 
@@ -369,12 +398,24 @@ setupFiles() {
 	return 0;
 }
 
+void
+printd(const char *format, ...) {
+	va_list ap;
+	if(!debug)
+		return;
+
+	va_start(ap, format);
+	vfprintf(stderr, format, ap);
+	fputc('\n', stderr);
+	va_end(ap);
+}
+
 int
 main (int argc, char *argv[])
 {
 	char opt;
 
-	while ((opt = getopt(argc, argv, "l:s:t:")) != -1) {
+	while ((opt = getopt(argc, argv, "dl:s:t:")) != -1) {
 		switch(opt) {
 			case 'l':
 				local = optarg;
@@ -386,10 +427,13 @@ main (int argc, char *argv[])
 				strncpy(ifr.ifr_name, optarg, IFNAMSIZ);
 				ifr.ifr_name[IFNAMSIZ] = 0;
 				break;
+			case 'd':
+				debug = 1;
+				break;
 usage:
 		default:
 			fprintf(stderr,
-					"Usage: %s [-l local] [-s remote] [-t tundev] [bind_address] port\n",
+					"Usage: %s [-d] [-l local] [-s remote] [-t tundev] [bind_address] port\n",
 					argv[0]);
 			return EXIT_FAILURE;
 		}
@@ -401,7 +445,7 @@ usage:
 
 	wsport = atoi(argv[argc-1]);
 
-	if(setupFiles())
+	if(setupfiles())
 		return EXIT_FAILURE;
 
 	if(tunalloc())
