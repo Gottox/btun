@@ -23,19 +23,17 @@
 #define MAGIC "BTuN"
 
 /* STRUCTS */
-struct HttpData {
-	char *type;
-	int code;
-	int position;
-	unsigned int size;
-	char *buffer;
-};
-
 struct Frame {
 	char magic[5];
 	uint64_t seq;
 	uint16_t size;
 	unsigned char buffer[FRAMESIZ];
+};
+
+struct FrameList {
+	unsigned int ref;
+	struct FrameList *next;
+	struct Frame frame;
 };
 
 struct WsData {
@@ -46,30 +44,32 @@ struct WsData {
 	struct Frame rec;
 };
 
-struct FrameList {
-	unsigned int ref;
-	struct FrameList *next;
-	struct Frame frame;
+struct HttpData {
+	char *type;
+	int code;
+	int position;
+	unsigned int size;
+	char *buffer;
 };
 
 /* FUNCTIONS */
-static int inittun();
-static int initws();
-static int initfiles();
-static int run();
-static int sendheader(struct libwebsocket *wsi, struct HttpData *data);
-static int senddata(struct libwebsocket *wsi, struct HttpData *data);
-static int callback_http(struct libwebsocket_context *context,
+static int cbhttp(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len);
-static int callback_ws(struct libwebsocket_context *context,
+static void cbtun(EV_P_ ev_io *w, int revents);
+static int cbws(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len);
 static void cleanframes();
-static void callback_tun(EV_P_ ev_io *w, int revents);
+static int initfiles();
+static int inittun();
+static int initws();
 static void printd(const char *format, ...);
+static int run();
+static int senddata(struct libwebsocket *wsi, struct HttpData *data);
+static int sendheader(struct libwebsocket *wsi, struct HttpData *data);
 
 /* GLOBALS */
 static char *local = "/", *remote = NULL, *wsbind = NULL;
@@ -85,13 +85,13 @@ int connections = 0;
 static struct libwebsocket_protocols protocols[] = {
 	{
 		.name = "http-only",
-		.callback = callback_http,
+		.callback = cbhttp,
 		.per_session_data_size = sizeof(struct HttpData),
 		.rx_buffer_size = 0
 	},
 	{
 		.name = "ws",
-		.callback = callback_ws,
+		.callback = cbws,
 		.per_session_data_size = sizeof(struct WsData),
 		.rx_buffer_size = 0
 	},
@@ -104,115 +104,97 @@ FIL(script_js)
 /* IMPLEMENTATION */
 
 int
-inittun() {
-	int fd, err;
-	char *clonedev = "/dev/net/tun";
+cbhttp(struct libwebsocket_context *context,
+		struct libwebsocket *wsi,
+		enum libwebsocket_callback_reasons reason, void *user,
+		void *in, size_t len) {
+	struct HttpData *data = (struct HttpData *)user;
 
-	if((fd = open(clonedev, O_RDWR)) < 0) {
-		perror(clonedev);
-		return -1;
+	switch (reason) {
+	case LWS_CALLBACK_HTTP:
+		printd("http: requested URI: %s", (char *)in);
+		data->position = 0;
+		data->code = 404;
+		data->buffer = "404 - Not found";
+		data->size = strlen(data->buffer);
+		data->type = "text/plain";
+		if(remote == NULL) {
+			// always return 404 if remote is undefined
+		} else if(strcmp(in, "/") == 0) {
+			data->code = 200;
+			data->buffer = index_html;
+			data->size = index_htmlN;
+			data->type = "text/html";
+		} else if(strcmp(in, "/script.js") == 0){
+			data->code = 200;
+			data->buffer = script_js;
+			data->size = script_jsN;
+			data->type = "application/javascript";
+		}
+
+		if(sendheader(wsi, data))
+			return 1;
+
+		libwebsocket_callback_on_writable(context, wsi);
+
+		break;
+	case LWS_CALLBACK_HTTP_WRITEABLE:
+		senddata(wsi, data);
+		break;
+	case LWS_CALLBACK_CLOSED_HTTP:
+		//TODO
+		break;
+	case LWS_CALLBACK_ADD_POLL_FD:
+	case LWS_CALLBACK_DEL_POLL_FD:
+	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
+	case LWS_CALLBACK_LOCK_POLL:
+	case LWS_CALLBACK_UNLOCK_POLL:
+	case LWS_CALLBACK_CLIENT_CONFIRM_EXTENSION_SUPPORTED:
+	case LWS_CALLBACK_PROTOCOL_INIT:
+	case LWS_CALLBACK_WSI_CREATE:
+	case LWS_CALLBACK_WSI_DESTROY:
+	case LWS_CALLBACK_FILTER_NETWORK_CONNECTION:
+	case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
+		break;
+	default:
+		printd("unhandled callback %i", reason);
+		break;
 	}
 
-	ifr.ifr_flags = IFF_TUN;
-
-	if( (err = ioctl(fd, TUNSETIFF, (void *) &ifr)) < 0 ) {
-		perror(clonedev);
-		close(fd);
-		return -1;
-	}
-
-	infd = outfd = fd;
 	return 0;
-}
-
-int
-initws() {
-	struct lws_context_creation_info info = { 0 };
-
-	info.protocols = protocols;
-	info.ssl_cert_filepath = NULL;
-	info.ssl_private_key_filepath = NULL;
-	info.gid = -1;
-	info.uid = -1;
-	info.options = LWS_SERVER_OPTION_LIBEV;
-	info.port = wsport;
-	info.iface = wsbind;
-
-	context = libwebsocket_create_context(&info);
-
-	return 0;
-}
-
-int
-run() {
-	struct ev_loop *loop = ev_default_loop(0);
-	ev_io_init(&tunwatcher, callback_tun, infd, EV_READ);
-	ev_io_start(loop, &tunwatcher);
-
-	libwebsocket_initloop(context, loop);
-	ev_loop(loop, 0);
-
-	return 0;
-}
-
-int
-sendheader(struct libwebsocket *wsi, struct HttpData *data) {
-	unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ + LWS_SEND_BUFFER_POST_PADDING];
-	unsigned char *end = &buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ];
-	unsigned char *p = &buf[LWS_SEND_BUFFER_PRE_PADDING];
-
-	if(lws_add_http_header_status(context, wsi, data->code, &p, end))
-		return 1;
-	if (lws_add_http_header_by_token(context, wsi,
-				WSI_TOKEN_HTTP_SERVER,
-				(unsigned char *)"pbp",
-				3, &p, end))
-		return 1;
-	if (lws_add_http_header_by_token(context, wsi,
-				WSI_TOKEN_HTTP_CONTENT_TYPE,
-				data->type,
-				strlen(data->type), &p, end))
-		return 1;
-	if (lws_add_http_header_content_length(context, wsi,
-				data->size, &p, end))
-		return 1;
-	if (lws_finalize_http_header(context, wsi, &p, end))
-		return 1;
-
-	return libwebsocket_write(wsi,
-			buf + LWS_SEND_BUFFER_PRE_PADDING,
-			p - (buf + LWS_SEND_BUFFER_PRE_PADDING),
-			LWS_WRITE_HTTP_HEADERS) < 0;
-}
-
-int
-senddata(struct libwebsocket *wsi, struct HttpData *data) {
-	// TODO: HTTP2 needs LWS_SEND_BUFFER_PRE_PADDING
-	// TODO: get lws_get_peer_write_allowance(wsi) to determine how much bytes
-	// we can send.
-	return libwebsocket_write(wsi,
-			data->buffer,
-			data->size,
-			LWS_WRITE_HTTP) < 0;
 }
 
 void
-cleanframes() {
+cbtun(EV_P_ ev_io *w, int revents) {
+	int n;
 	struct FrameList *frame;
-	int i = 0;
-	while(frames && frames->ref == 0) {
-		i++;
-		frame = frames;
-		frames = frames->next;
-		free(frame);
+
+	if(connections == 0)
+		return;
+	else if (revents & EV_READ) {
+		frame = calloc(1, sizeof(struct FrameList));
+		n = read(infd, frame->frame.buffer, FRAMESIZ);
+		if(n < 0) {
+			perror("read");
+			exit(EXIT_FAILURE);
+		}
+		frame->frame.size = n;
+		frame->frame.seq = ++sendseq;
+		if(lastFrame) {
+			lastFrame->next = frame;
+			lastFrame = frame;
+		}
+		else {
+			lastFrame = frames = frame;
+		}
+
+		// request a write slot on all clients
+		libwebsocket_callback_on_writable_all_protocol(&protocols[1]);
 	}
-	if(frames == NULL)
-		lastFrame = NULL;
-	printd("%i frames cleaned", i);
 }
 
 int
-callback_ws(struct libwebsocket_context *context,
+cbws(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len) {
@@ -330,94 +312,19 @@ callback_ws(struct libwebsocket_context *context,
 	return 0;
 }
 
-int
-callback_http(struct libwebsocket_context *context,
-		struct libwebsocket *wsi,
-		enum libwebsocket_callback_reasons reason, void *user,
-		void *in, size_t len) {
-	struct HttpData *data = (struct HttpData *)user;
-
-	switch (reason) {
-	case LWS_CALLBACK_HTTP:
-		printd("http: requested URI: %s", (char *)in);
-		data->position = 0;
-		data->code = 404;
-		data->buffer = "404 - Not found";
-		data->size = strlen(data->buffer);
-		data->type = "text/plain";
-		if(remote == NULL) {
-			// always return 404 if remote is undefined
-		} else if(strcmp(in, "/") == 0) {
-			data->code = 200;
-			data->buffer = index_html;
-			data->size = index_htmlN;
-			data->type = "text/html";
-		} else if(strcmp(in, "/script.js") == 0){
-			data->code = 200;
-			data->buffer = script_js;
-			data->size = script_jsN;
-			data->type = "application/javascript";
-		}
-
-		if(sendheader(wsi, data))
-			return 1;
-
-		libwebsocket_callback_on_writable(context, wsi);
-
-		break;
-	case LWS_CALLBACK_HTTP_WRITEABLE:
-		senddata(wsi, data);
-		break;
-	case LWS_CALLBACK_CLOSED_HTTP:
-		//TODO
-		break;
-	case LWS_CALLBACK_ADD_POLL_FD:
-	case LWS_CALLBACK_DEL_POLL_FD:
-	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
-	case LWS_CALLBACK_LOCK_POLL:
-	case LWS_CALLBACK_UNLOCK_POLL:
-	case LWS_CALLBACK_CLIENT_CONFIRM_EXTENSION_SUPPORTED:
-	case LWS_CALLBACK_PROTOCOL_INIT:
-	case LWS_CALLBACK_WSI_CREATE:
-	case LWS_CALLBACK_WSI_DESTROY:
-	case LWS_CALLBACK_FILTER_NETWORK_CONNECTION:
-	case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
-		break;
-	default:
-		printd("unhandled callback %i", reason);
-		break;
-	}
-
-	return 0;
-}
-
 void
-callback_tun(EV_P_ ev_io *w, int revents) {
-	int n;
+cleanframes() {
 	struct FrameList *frame;
-
-	if(connections == 0)
-		return;
-	else if (revents & EV_READ) {
-		frame = calloc(1, sizeof(struct FrameList));
-		n = read(infd, frame->frame.buffer, FRAMESIZ);
-		if(n < 0) {
-			perror("read");
-			exit(EXIT_FAILURE);
-		}
-		frame->frame.size = n;
-		frame->frame.seq = ++sendseq;
-		if(lastFrame) {
-			lastFrame->next = frame;
-			lastFrame = frame;
-		}
-		else {
-			lastFrame = frames = frame;
-		}
-
-		// request a write slot on all clients
-		libwebsocket_callback_on_writable_all_protocol(&protocols[1]);
+	int i = 0;
+	while(frames && frames->ref == 0) {
+		i++;
+		frame = frames;
+		frames = frames->next;
+		free(frame);
 	}
+	if(frames == NULL)
+		lastFrame = NULL;
+	printd("%i frames cleaned", i);
 }
 
 int
@@ -444,6 +351,46 @@ initfiles() {
 	return 0;
 }
 
+int
+inittun() {
+	int fd, err;
+	char *clonedev = "/dev/net/tun";
+
+	if((fd = open(clonedev, O_RDWR)) < 0) {
+		perror(clonedev);
+		return -1;
+	}
+
+	ifr.ifr_flags = IFF_TUN;
+
+	if( (err = ioctl(fd, TUNSETIFF, (void *) &ifr)) < 0 ) {
+		perror(clonedev);
+		close(fd);
+		return -1;
+	}
+
+	infd = outfd = fd;
+	return 0;
+}
+
+int
+initws() {
+	struct lws_context_creation_info info = { 0 };
+
+	info.protocols = protocols;
+	info.ssl_cert_filepath = NULL;
+	info.ssl_private_key_filepath = NULL;
+	info.gid = -1;
+	info.uid = -1;
+	info.options = LWS_SERVER_OPTION_LIBEV;
+	info.port = wsport;
+	info.iface = wsbind;
+
+	context = libwebsocket_create_context(&info);
+
+	return 0;
+}
+
 void
 printd(const char *format, ...) {
 	va_list ap;
@@ -454,6 +401,60 @@ printd(const char *format, ...) {
 	vfprintf(stderr, format, ap);
 	fputc('\n', stderr);
 	va_end(ap);
+}
+
+int
+run() {
+	struct ev_loop *loop = ev_default_loop(0);
+	ev_io_init(&tunwatcher, cbtun, infd, EV_READ);
+	ev_io_start(loop, &tunwatcher);
+
+	libwebsocket_initloop(context, loop);
+	ev_loop(loop, 0);
+
+	return 0;
+}
+
+int
+sendheader(struct libwebsocket *wsi, struct HttpData *data) {
+	unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ +
+		LWS_SEND_BUFFER_POST_PADDING];
+	unsigned char *end = &buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ];
+	unsigned char *p = &buf[LWS_SEND_BUFFER_PRE_PADDING];
+
+	if(lws_add_http_header_status(context, wsi, data->code, &p, end))
+		return 1;
+	if (lws_add_http_header_by_token(context, wsi,
+				WSI_TOKEN_HTTP_SERVER,
+				(unsigned char *)"pbp",
+				3, &p, end))
+		return 1;
+	if (lws_add_http_header_by_token(context, wsi,
+				WSI_TOKEN_HTTP_CONTENT_TYPE,
+				data->type,
+				strlen(data->type), &p, end))
+		return 1;
+	if (lws_add_http_header_content_length(context, wsi,
+				data->size, &p, end))
+		return 1;
+	if (lws_finalize_http_header(context, wsi, &p, end))
+		return 1;
+
+	return libwebsocket_write(wsi,
+			buf + LWS_SEND_BUFFER_PRE_PADDING,
+			p - (buf + LWS_SEND_BUFFER_PRE_PADDING),
+			LWS_WRITE_HTTP_HEADERS) < 0;
+}
+
+int
+senddata(struct libwebsocket *wsi, struct HttpData *data) {
+	// TODO: HTTP2 needs LWS_SEND_BUFFER_PRE_PADDING
+	// TODO: get lws_get_peer_write_allowance(wsi) to determine how much bytes
+	// we can send.
+	return libwebsocket_write(wsi,
+			data->buffer,
+			data->size,
+			LWS_WRITE_HTTP) < 0;
 }
 
 int
