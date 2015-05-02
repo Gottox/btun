@@ -53,8 +53,9 @@ struct FrameList {
 };
 
 /* FUNCTIONS */
-static int tunalloc();
-static int wsinit();
+static int inittun();
+static int initws();
+static int initfiles();
 static int run();
 static int sendheader(struct libwebsocket *wsi, struct HttpData *data);
 static int senddata(struct libwebsocket *wsi, struct HttpData *data);
@@ -68,7 +69,6 @@ static int callback_ws(struct libwebsocket_context *context,
 		void *in, size_t len);
 static void cleanframes();
 static void callback_tun(EV_P_ ev_io *w, int revents);
-static int setupfiles();
 static void printd(const char *format, ...);
 
 /* GLOBALS */
@@ -104,7 +104,7 @@ FIL(script_js)
 /* IMPLEMENTATION */
 
 int
-tunalloc() {
+inittun() {
 	int fd, err;
 	char *clonedev = "/dev/net/tun";
 
@@ -126,7 +126,7 @@ tunalloc() {
 }
 
 int
-wsinit() {
+initws() {
 	struct lws_context_creation_info info = { 0 };
 
 	info.protocols = protocols;
@@ -421,7 +421,7 @@ callback_tun(EV_P_ ev_io *w, int revents) {
 }
 
 int
-setupfiles() {
+initfiles() {
 	int len;
 	char *p;
 
@@ -494,13 +494,13 @@ usage:
 
 	wsport = atoi(argv[argc-1]);
 
-	if(setupfiles())
+	if(initfiles())
 		return EXIT_FAILURE;
 
-	if(tunalloc())
+	if(inittun())
 		return EXIT_FAILURE;
 
-	if(wsinit())
+	if(initws())
 		return EXIT_FAILURE;
 
 	if(run())
