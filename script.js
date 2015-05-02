@@ -2,7 +2,7 @@
 var l = window.location;
 var socks = [];
 function setup(ii, addr) {
-	var sock, i;
+	var sock, i, closing = false;
 	if(addr == "")
 		return;
 	else if(addr == '/') {
@@ -23,7 +23,13 @@ function setup(ii, addr) {
 		}
 	};
 	sock.onclose = sock.onerror = function() {
-		setup(ii, addr);
+		for(i = 0; i < socks.length; i++) {
+			if(i != ii && socks[i] && socks[i].readyState<=1)
+				socks[i].close();
+		}
+		if(!closing)
+			setup(ii, addr);
+		closing = true;
 	};
 	socks[ii] = sock;
 }
