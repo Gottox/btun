@@ -396,7 +396,9 @@ callback_tun(EV_P_ ev_io *w, int revents) {
 	int n;
 	struct FrameList *frame;
 
-	if (revents & EV_READ) {
+	if(connections == 0)
+		return;
+	else if (revents & EV_READ) {
 		frame = calloc(1, sizeof(struct FrameList));
 		n = read(infd, frame->frame.buffer, FRAMESIZ);
 		if(n < 0) {
