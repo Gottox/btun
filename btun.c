@@ -234,6 +234,7 @@ callback_ws(struct libwebsocket_context *context,
 		}
 
 		while(data->send) {
+			strcpy(frame->magic, MAGIC);
 			frame->seq = htobe64(data->send->frame.seq);
 			frame->size = htons(data->send->frame.size);
 			memcpy(frame->buffer, data->send->frame.buffer + data->sendoff,
@@ -255,8 +256,10 @@ callback_ws(struct libwebsocket_context *context,
 			// libwebsocket_write could send partial data
 			// If so break here and wait till websocket gets
 			// writable again.
-			if(data->sendoff < data->send->frame.size)
+			if(data->sendoff < data->send->frame.size) {
+				libwebsocket_callback_on_writable(context, wsi);
 				break;
+			}
 
 			// Skip to next buffer
 			data->send->ref--;
@@ -301,6 +304,17 @@ callback_ws(struct libwebsocket_context *context,
 		}
 		cleanframes();
 		break;
+	case LWS_CALLBACK_ADD_POLL_FD:
+	case LWS_CALLBACK_DEL_POLL_FD:
+	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
+	case LWS_CALLBACK_LOCK_POLL:
+	case LWS_CALLBACK_UNLOCK_POLL:
+	case LWS_CALLBACK_PROTOCOL_INIT:
+	case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
+		break;
+	default:
+		printd("unhandled callback %i", reason);
+		break;
 	}
 	return 0;
 }
@@ -343,6 +357,21 @@ callback_http(struct libwebsocket_context *context,
 	case LWS_CALLBACK_HTTP_WRITEABLE:
 		senddata(wsi, data);
 		break;
+	case LWS_CALLBACK_CLOSED_HTTP:
+		//TODO
+		break;
+	case LWS_CALLBACK_ADD_POLL_FD:
+	case LWS_CALLBACK_DEL_POLL_FD:
+	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
+	case LWS_CALLBACK_LOCK_POLL:
+	case LWS_CALLBACK_UNLOCK_POLL:
+	case LWS_CALLBACK_CLIENT_CONFIRM_EXTENSION_SUPPORTED:
+	case LWS_CALLBACK_PROTOCOL_INIT:
+	case LWS_CALLBACK_WSI_CREATE:
+	case LWS_CALLBACK_WSI_DESTROY:
+	case LWS_CALLBACK_FILTER_NETWORK_CONNECTION:
+	case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
+		break;
 	default:
 		printd("unhandled callback %i", reason);
 		break;
@@ -363,7 +392,6 @@ callback_tun(EV_P_ ev_io *w, int revents) {
 			perror("read");
 			exit(EXIT_FAILURE);
 		}
-		strcpy(frame->frame.magic, MAGIC);
 		frame->frame.size = n;
 		frame->frame.seq = ++sendseq;
 		if(lastFrame) {
@@ -419,7 +447,7 @@ printd(const char *format, ...) {
 int
 main (int argc, char *argv[])
 {
-	char opt;
+	int opt;
 
 	while ((opt = getopt(argc, argv, "dl:s:t:")) != -1) {
 		switch(opt) {
