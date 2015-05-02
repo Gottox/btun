@@ -1,0 +1,86 @@
+.TH BTUN 1 btun\-0.1
+.SS NAME
+.PP
+btun \- bidirectional tunnel through a webbrowser
+.SS SYNOPSIS
+.PP
+\f[B]btun\f[] [\f[B]\-d\f[]] [\f[B]\-l\f[] \f[C]local\f[]] [\f[B]\-s\f[]
+\f[C]remote\f[]] [\f[B]\-t\f[] \f[C]tundev\f[]] [\f[C]bind_address\f[]]
+\f[C]port\f[]
+.PP
+\f[B]btun\f[] [\f[B]\-v\f[]]
+.SS DESCRIPTION
+.PP
+\f[B]btun\f[] establishes a bidirectional connection between two hosts
+.PD 0
+.P
+.PD
+using one or more browsers as mediators.
+.IP
+.nf
+\f[C]
+\ host1\ \ \ \ \ \ \ \ \ user\ \ \ \ \ \ \ \ \ host2
++\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-+
+|\ btun\ |\-\-\-\-|\ browser\ |\-\-\-\-|\ btun\ |
++\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-+
+\f[]
+.fi
+.PP
+If multiple browsers are connected, every package is sent to all
+.PD 0
+.P
+.PD
+mediators.
+The receiver takes the first package and drops the rest.
+.SS OPTIONS
+.PP
+\f[B]\-d\f[]
+.PD 0
+.P
+.PD
+prints debug messages
+.PP
+\f[B]\-l\f[] \f[C]local\f[]
+.PD 0
+.P
+.PD
+sets the local address for a websocket connection.
+If unspecified
+.PD 0
+.P
+.PD
+Javascript tries to guess an address.
+This option has no effect
+.PD 0
+.P
+.PD
+if \f[B]\-s\f[] is not specified
+.PP
+\f[B]\-s\f[] \f[C]remote\f[]
+.PD 0
+.P
+.PD
+enables server mode: an index is delivered which connects the
+.PD 0
+.P
+.PD
+browser via websocket to \f[C]local\f[] and \f[C]remote\f[].
+\f[C]local\f[] is guessed
+.PD 0
+.P
+.PD
+but can be set explicitly via the \f[B]\-l\f[] option.
+.SS EXAMPLES
+.PP
+TODO
+.SS DIAGNOSTICS
+.PP
+TODO
+.SS BUGS
+.PP
+Currently \f[B]btun\f[] does not encrypt any data.
+Both, a passive attacker
+.PD 0
+.P
+.PD
+and the mediator can read any data sent through btun.

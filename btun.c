@@ -462,21 +462,24 @@ main (int argc, char *argv[])
 {
 	int opt;
 
-	while ((opt = getopt(argc, argv, "dl:s:t:")) != -1) {
+	while ((opt = getopt(argc, argv, "dl:s:t:v")) != -1) {
 		switch(opt) {
-			case 'l':
-				local = optarg;
-				break;
-			case 's':
-				remote = optarg;
-				break;
-			case 't':
-				strncpy(ifr.ifr_name, optarg, IFNAMSIZ);
-				ifr.ifr_name[IFNAMSIZ] = 0;
-				break;
-			case 'd':
-				debug = 1;
-				break;
+		case 'l':
+			local = optarg;
+			break;
+		case 's':
+			remote = optarg;
+			break;
+		case 't':
+			strncpy(ifr.ifr_name, optarg, IFNAMSIZ);
+			ifr.ifr_name[IFNAMSIZ] = 0;
+			break;
+		case 'd':
+			debug = 1;
+			break;
+		case 'v':
+			fputs("btun-" VERSION "\n", stderr);
+			return EXIT_FAILURE;
 usage:
 		default:
 			fprintf(stderr,
