@@ -25,7 +25,7 @@
 
 /* STRUCTS */
 struct Frame {
-	unsigned char magic[5];
+	unsigned char magic[sizeof(MAGIC)];
 	uint64_t seq;
 	uint16_t size;
 	unsigned char buffer[FRAMESIZ];
