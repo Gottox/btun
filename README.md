@@ -1,5 +1,5 @@
-BTUN 1 btun-0.1
-===============
+BTUN 1 "May 2015" btun-0.1 "User Commands"
+==========================================
 
 NAME
 ----
@@ -19,10 +19,11 @@ DESCRIPTION
 **btun** establishes a bidirectional connection between two hosts
 using one or more browsers as mediators.
 
-	 host1         user         host2
-	+------+    +---------+    +------+
-	| btun |----| browser |----| btun |
-	+------+    +---------+    +------+
+	       host1        mediator       host2
+	      +------+    +---------+    +------+
+	  +---| btun |----| browser |----| btun |---+
+	  |   +------+    +---------+    +------+   |
+	 tunX                                      tunX
 
 If multiple browsers are connected, every package is sent to all
 mediators. The receiver takes the first package and drops the rest.
@@ -51,7 +52,8 @@ TODO
 DIAGNOSTICS
 -----------
 
-TODO
+Use tcpdump(1)m the **-d** flag and the debug tools of your browser to debug
+network problems.
 
 BUGS
 ----

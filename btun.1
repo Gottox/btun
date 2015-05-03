@@ -1,4 +1,4 @@
-.TH BTUN 1 btun\-0.1
+.TH BTUN 1 "May 2015" btun\-0.1 "User Commands"
 .SS NAME
 .PP
 btun \- bidirectional tunnel through a webbrowser
@@ -19,10 +19,11 @@ using one or more browsers as mediators.
 .IP
 .nf
 \f[C]
-\ host1\ \ \ \ \ \ \ \ \ user\ \ \ \ \ \ \ \ \ host2
-+\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-+
-|\ btun\ |\-\-\-\-|\ browser\ |\-\-\-\-|\ btun\ |
-+\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-+
+\ \ \ \ \ \ \ host1\ \ \ \ \ \ \ \ mediator\ \ \ \ \ \ \ host2
+\ \ \ \ \ \ +\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-+
+\ \ +\-\-\-|\ btun\ |\-\-\-\-|\ browser\ |\-\-\-\-|\ btun\ |\-\-\-+
+\ \ |\ \ \ +\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-\-\-\-+\ \ \ \ +\-\-\-\-\-\-+\ \ \ |
+\ tunX\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ tunX
 \f[]
 .fi
 .PP
@@ -75,7 +76,12 @@ but can be set explicitly via the \f[B]\-l\f[] option.
 TODO
 .SS DIAGNOSTICS
 .PP
-TODO
+Use tcpdump(1)m the \f[B]\-d\f[] flag and the debug tools of your
+browser to debug
+.PD 0
+.P
+.PD
+network problems.
 .SS BUGS
 .PP
 Currently \f[B]btun\f[] does not encrypt any data.

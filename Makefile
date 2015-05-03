@@ -3,7 +3,7 @@ OBJ = index.o script.o
 LIBS = -lwebsockets -lev
 PREFIX ?= /usr/local
 MANPREFIX ?= $(PREFIX)/share/man
-VERSION = $(shell head -n 1 README.md | cut -d- -f 2)
+VERSION = $(shell head -n 1 README.md | cut -d- -f 2 | cut -d' ' -f1)
 
 all: btun
 
