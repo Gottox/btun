@@ -40,8 +40,8 @@ struct WsData {
 	uint64_t seq;
 	size_t sendoff;
 	struct FrameList *send;
-	size_t recoff;
-	struct Frame rec;
+	size_t recvoff;
+	struct Frame recv;
 };
 
 struct HttpData {
@@ -67,8 +67,11 @@ static int initfiles();
 static int inittun();
 static int initws();
 static void printd(const char *format, ...);
+static void printlog(int level, const char *line);
+static int recvframe(void *in, size_t len, struct WsData *data);
 static int run();
 static int senddata(struct libwebsocket *wsi, struct HttpData *data);
+static int sendframes(struct libwebsocket *wsi, struct WsData *data);
 static int sendheader(struct libwebsocket *wsi, struct HttpData *data);
 
 /* GLOBALS */
@@ -79,7 +82,7 @@ static struct ev_loop *loop;
 static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
 static struct FrameList *frames = NULL, *lastFrame = NULL;
-static uint64_t sendseq = 0, recseq = 0;
+static uint64_t sendseq = 0, recvseq = 0;
 static int connections = 0;
 static struct libwebsocket_protocols protocols[] = {
 	{
@@ -101,7 +104,6 @@ FIL(index_html)
 FIL(script_js)
 
 /* IMPLEMENTATION */
-
 int
 cbhttp(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
@@ -132,7 +134,7 @@ cbhttp(struct libwebsocket_context *context,
 		}
 
 		if(sendheader(wsi, data))
-			return 1;
+			return -1;
 
 		libwebsocket_callback_on_writable(context, wsi);
 
@@ -198,10 +200,6 @@ cbws(struct libwebsocket_context *context,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len) {
 	struct WsData *data = (struct WsData *)user;
-	int sent = 0;
-	unsigned buf[LWS_SEND_BUFFER_PRE_PADDING + sizeof(struct Frame) +
-		LWS_SEND_BUFFER_POST_PADDING];
-	struct Frame *frame = (struct Frame* )&buf[LWS_SEND_BUFFER_PRE_PADDING];
 
 	switch(reason) {
 	case LWS_CALLBACK_ESTABLISHED:
@@ -211,78 +209,10 @@ cbws(struct libwebsocket_context *context,
 		break;
 	case LWS_CALLBACK_SERVER_WRITEABLE:
 		printd("client is writable");
-		if(data->send == NULL && frames != NULL) {
-			data->send = frames;
-			data->send->ref++;
-		}
-
-		while(data->send) {
-			strcpy(frame->magic, MAGIC);
-			frame->seq = htobe64(data->send->frame.seq);
-			frame->size = htons(data->send->frame.size);
-			memcpy(frame->buffer, data->send->frame.buffer + data->sendoff,
-					data->send->frame.size - data->sendoff);
-			sent = libwebsocket_write(wsi, (unsigned char *)frame,
-					sizeof(struct Frame) - FRAMESIZ +
-					data->send->frame.size - data->sendoff, LWS_WRITE_BINARY);
-			if(sent < 0) {
-				printd("write failed. closing connection.");
-				return -1;
-			} else if(sent <= sizeof(struct Frame) - FRAMESIZ) {
-				printd("short write. closing connection.");
-				return -1;
-			}
-
-			printd("frame sent: payload: %d, sent: %d", data->send->frame.size, sent);
-			data->sendoff += sent - (sizeof(struct Frame) - FRAMESIZ);
-
-			// libwebsocket_write could send partial data
-			// If so break here and wait till websocket gets
-			// writable again.
-			if(data->sendoff < data->send->frame.size) {
-				libwebsocket_callback_on_writable(context, wsi);
-				break;
-			}
-
-			// Skip to next buffer
-			data->send->ref--;
-			data->send = data->send->next;
-			if(data->send)
-				data->send->ref++;
-			data->sendoff = 0;
-		}
-
-		cleanframes();
+		sendframes(wsi, data);
 		break;
 	case LWS_CALLBACK_RECEIVE:
-		frame = in;
-		if(strcmp(MAGIC, frame->magic) != 0) {
-			printd("invalid magic: drop frame");
-			break;
-		}
-		data->rec.seq = data->rec.seq = be64toh(frame->seq);
-		data->rec.size = ntohs(frame->size);
-		printd("frame received: payload: %d, received: %d", data->rec.size, len);
-		len -= sizeof(struct Frame) - FRAMESIZ;
-
-		if(data->rec.seq <= recseq) {
-			printd("old sequence number: drop frame");
-			data->recoff = 0;
-			break;
-		}
-
-		memcpy(data->rec.buffer + data->recoff, frame->buffer, len);
-		data->recoff += len;
-		if(data->recoff >= data->rec.size) {
-			data->recoff = 0;
-			recseq = data->rec.seq;
-			sent = write(outfd, data->rec.buffer, data->rec.size);
-			if(sent < 0) {
-				perror("write");
-				return -1;
-			}
-			printd("frame received: size: %d, written: %d", data->rec.size, sent);
-		}
+		recvframe(in, len, data);
 		break;
 	case LWS_CALLBACK_CLOSED:
 		if(data->send) {
@@ -293,7 +223,7 @@ cbws(struct libwebsocket_context *context,
 		printd("closing connection: %d clients connected", connections);
 		if(connections == 0) {
 			printd("no connections left, resetting message sequence");
-			sendseq = recseq = 0;
+			sendseq = recvseq = 0;
 		}
 		break;
 	case LWS_CALLBACK_ADD_POLL_FD:
@@ -376,6 +306,8 @@ int
 initws() {
 	struct lws_context_creation_info info = { 0 };
 
+	lws_set_log_level(debug ? 7 : 0, printlog);
+
 	info.protocols = protocols;
 	info.ssl_cert_filepath = NULL;
 	info.ssl_private_key_filepath = NULL;
@@ -393,13 +325,61 @@ initws() {
 void
 printd(const char *format, ...) {
 	va_list ap;
+
 	if(!debug)
 		return;
-
 	va_start(ap, format);
 	vfprintf(stderr, format, ap);
 	fputc('\n', stderr);
 	va_end(ap);
+}
+
+void
+printlog(int level, const char *line) {
+	int len;
+	char buf[128] = { 0 };
+
+	// remove nl at the end.
+	strncpy(buf, line, 127);
+	len = strlen(buf);
+	if(len > 0)
+		buf[len - 1] = '\0';
+	printd("libwebsockets: %s", buf);
+}
+
+int
+recvframe(void *in, size_t len, struct WsData *data) {
+	int sent;
+	struct Frame *frame = (struct Frame*)in;
+
+	// TODO: bound check
+	if(strcmp(MAGIC, frame->magic) != 0) {
+		printd("invalid magic: drop frame");
+		return 0;
+	}
+	data->recv.seq = data->recv.seq = be64toh(frame->seq);
+	data->recv.size = ntohs(frame->size);
+	printd("frame received: payload: %d, received: %d", data->recv.size, len);
+	len -= sizeof(struct Frame) - FRAMESIZ;
+
+	if(data->recv.seq <= recvseq) {
+		printd("old sequence number: drop frame");
+		data->recvoff = 0;
+		return 0;
+	}
+
+	memcpy(data->recv.buffer + data->recvoff, frame->buffer, len);
+	data->recvoff += len;
+	if(data->recvoff >= data->recv.size) {
+		data->recvoff = 0;
+		recvseq = data->recv.seq;
+		sent = write(outfd, data->recv.buffer, data->recv.size);
+		if(sent < 0) {
+			perror("write");
+			return -1;
+		}
+		printd("frame received: size: %d, written: %d", data->recv.size, sent);
+	}
 }
 
 int
@@ -415,37 +395,6 @@ run() {
 }
 
 int
-sendheader(struct libwebsocket *wsi, struct HttpData *data) {
-	unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ +
-		LWS_SEND_BUFFER_POST_PADDING];
-	unsigned char *end = &buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ];
-	unsigned char *p = &buf[LWS_SEND_BUFFER_PRE_PADDING];
-
-	if(lws_add_http_header_status(context, wsi, data->code, &p, end))
-		return 1;
-	if (lws_add_http_header_by_token(context, wsi,
-				WSI_TOKEN_HTTP_SERVER,
-				(unsigned char *)"pbp",
-				3, &p, end))
-		return 1;
-	if (lws_add_http_header_by_token(context, wsi,
-				WSI_TOKEN_HTTP_CONTENT_TYPE,
-				data->type,
-				strlen(data->type), &p, end))
-		return 1;
-	if (lws_add_http_header_content_length(context, wsi,
-				data->size, &p, end))
-		return 1;
-	if (lws_finalize_http_header(context, wsi, &p, end))
-		return 1;
-
-	return libwebsocket_write(wsi,
-			buf + LWS_SEND_BUFFER_PRE_PADDING,
-			p - (buf + LWS_SEND_BUFFER_PRE_PADDING),
-			LWS_WRITE_HTTP_HEADERS) < 0;
-}
-
-int
 senddata(struct libwebsocket *wsi, struct HttpData *data) {
 	// TODO: HTTP2 needs LWS_SEND_BUFFER_PRE_PADDING
 	// TODO: get lws_get_peer_write_allowance(wsi) to determine how much bytes
@@ -454,6 +403,89 @@ senddata(struct libwebsocket *wsi, struct HttpData *data) {
 			data->buffer,
 			data->size,
 			LWS_WRITE_HTTP) < 0;
+}
+
+int
+sendframes(struct libwebsocket *wsi, struct WsData *data) {
+	int sent;
+	unsigned buf[LWS_SEND_BUFFER_PRE_PADDING + sizeof(struct Frame) +
+		LWS_SEND_BUFFER_POST_PADDING];
+	struct Frame *frame = (struct Frame* )&buf[LWS_SEND_BUFFER_PRE_PADDING];
+
+	if(data->send == NULL && frames != NULL) {
+		data->send = frames;
+		data->send->ref++;
+	}
+
+	while(data->send) {
+		strcpy(frame->magic, MAGIC);
+		frame->seq = htobe64(data->send->frame.seq);
+		frame->size = htons(data->send->frame.size);
+		memcpy(frame->buffer, data->send->frame.buffer + data->sendoff,
+				data->send->frame.size - data->sendoff);
+		sent = libwebsocket_write(wsi, (unsigned char *)frame,
+				sizeof(struct Frame) - FRAMESIZ +
+				data->send->frame.size - data->sendoff, LWS_WRITE_BINARY);
+		if(sent < 0) {
+			printd("write failed. closing connection.");
+			return -1;
+		} else if(sent <= sizeof(struct Frame) - FRAMESIZ) {
+			printd("short write. closing connection.");
+			return -1;
+		}
+
+		printd("frame sent: payload: %d, sent: %d", data->send->frame.size, sent);
+		data->sendoff += sent - (sizeof(struct Frame) - FRAMESIZ);
+
+		// libwebsocket_write could send partial data
+		// If so break here and wait till websocket gets
+		// writable again.
+		if(data->sendoff < data->send->frame.size) {
+			libwebsocket_callback_on_writable(context, wsi);
+			break;
+		}
+
+		// Skip to next buffer
+		data->send->ref--;
+		data->send = data->send->next;
+		if(data->send)
+			data->send->ref++;
+		data->sendoff = 0;
+	}
+
+	cleanframes();
+	return 0;
+}
+
+int
+sendheader(struct libwebsocket *wsi, struct HttpData *data) {
+	unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ +
+		LWS_SEND_BUFFER_POST_PADDING];
+	unsigned char *end = &buf[LWS_SEND_BUFFER_PRE_PADDING + BUFSIZ];
+	unsigned char *p = &buf[LWS_SEND_BUFFER_PRE_PADDING];
+
+	if(lws_add_http_header_status(context, wsi, data->code, &p, end))
+		return -1;
+	if (lws_add_http_header_by_token(context, wsi,
+				WSI_TOKEN_HTTP_SERVER,
+				(unsigned char *)"pbp",
+				3, &p, end))
+		return -1;
+	if (lws_add_http_header_by_token(context, wsi,
+				WSI_TOKEN_HTTP_CONTENT_TYPE,
+				data->type,
+				strlen(data->type), &p, end))
+		return -1;
+	if (lws_add_http_header_content_length(context, wsi,
+				data->size, &p, end))
+		return -1;
+	if (lws_finalize_http_header(context, wsi, &p, end))
+		return -1;
+
+	return libwebsocket_write(wsi,
+			buf + LWS_SEND_BUFFER_PRE_PADDING,
+			p - (buf + LWS_SEND_BUFFER_PRE_PADDING),
+			LWS_WRITE_HTTP_HEADERS) < 0;
 }
 
 int
