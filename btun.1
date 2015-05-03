@@ -72,8 +72,23 @@ browser via websocket to \f[I]local\f[] and \f[I]remote\f[].
 .PD
 but can be set explicitly via the \f[B]\-l\f[] option.
 .SS EXAMPLES
+.IP
+.nf
+\f[C]
+host1\ #\ btun\ \-s\ ws://host2:8000\ 8000
+host1\ #\ ifconfig\ tun0\ 10.0.111.1\ dstaddr\ 10.0.111.2
+
+host2\ #\ btun\ 8000
+host2\ #\ ifconfig\ tun0\ 10.0.111.2\ dstaddr\ 10.0.111.1
+\f[]
+.fi
 .PP
-TODO
+Point your browser to <http://host1:8000>.
+As long as the browser has a connection
+.PD 0
+.P
+.PD
+both hosts, the connection between both hosts is established.
 .SS DIAGNOSTICS
 .PP
 Use tcpdump(1)m the \f[B]\-d\f[] flag and the debug tools of your
