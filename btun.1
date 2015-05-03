@@ -4,9 +4,9 @@
 btun \- bidirectional tunnel through a webbrowser
 .SS SYNOPSIS
 .PP
-\f[B]btun\f[] [\f[B]\-d\f[]] [\f[B]\-l\f[] \f[C]local\f[]] [\f[B]\-s\f[]
-\f[C]remote\f[]] [\f[B]\-t\f[] \f[C]tundev\f[]] [\f[C]bind_address\f[]]
-\f[C]port\f[]
+\f[B]btun\f[] [\f[B]\-d\f[]] [\f[B]\-l\f[] \f[I]local\f[]] [\f[B]\-s\f[]
+\f[I]remote\f[]] [\f[B]\-t\f[] \f[I]tundev\f[]] [\f[I]bind_address\f[]]
+\f[I]port\f[]
 .PP
 \f[B]btun\f[] [\f[B]\-v\f[]]
 .SS DESCRIPTION
@@ -41,7 +41,7 @@ The receiver takes the first package and drops the rest.
 .PD
 prints debug messages
 .PP
-\f[B]\-l\f[] \f[C]local\f[]
+\f[B]\-l\f[] \f[I]local\f[]
 .PD 0
 .P
 .PD
@@ -57,7 +57,7 @@ This option has no effect
 .PD
 if \f[B]\-s\f[] is not specified
 .PP
-\f[B]\-s\f[] \f[C]remote\f[]
+\f[B]\-s\f[] \f[I]remote\f[]
 .PD 0
 .P
 .PD
@@ -65,8 +65,8 @@ enables server mode: an index is delivered which connects the
 .PD 0
 .P
 .PD
-browser via websocket to \f[C]local\f[] and \f[C]remote\f[].
-\f[C]local\f[] is guessed
+browser via websocket to \f[I]local\f[] and \f[I]remote\f[].
+\f[I]local\f[] is guessed
 .PD 0
 .P
 .PD

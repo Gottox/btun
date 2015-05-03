@@ -9,7 +9,7 @@ btun - bidirectional tunnel through a webbrowser
 SYNOPSIS
 --------
 
-**btun** [**-d**] [**-l** `local`] [**-s** `remote`] [**-t** `tundev`] [`bind_address`] `port`
+**btun** [**-d**] [**-l** *local*] [**-s** *remote*] [**-t** *tundev*] [*bind_address*] *port*
 
 **btun** [**-v**]
 
@@ -34,14 +34,14 @@ OPTIONS
 **-d**
 prints debug messages
 
-**-l** `local`
+**-l** *local*
 sets the local address for a websocket connection. If unspecified
 Javascript tries to guess an address. This option has no effect
 if **-s** is not specified
 
-**-s** `remote`
+**-s** *remote*
 enables server mode: an index is delivered which connects the
-browser via websocket to `local` and `remote`. `local` is guessed
+browser via websocket to *local* and *remote*. *local* is guessed
 but can be set explicitly via the **-l** option.
 
 EXAMPLES
