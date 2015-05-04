@@ -8,7 +8,7 @@ VERSION = $(shell head -n 1 README.md | cut -d- -f 2 | cut -d' ' -f1)
 all: btun
 
 btun: $(SRC) $(OBJ)
-	$(CC) -DVERSION=\"$(VERSION)\" -o $@ $(LIBS) $(CFLAGS) $(LDFLAGS) $(SRC) $(OBJ)
+	$(CC) -DLWS_USE_LIBEV -DVERSION=\"$(VERSION)\" -o $@ $(LIBS) $(CFLAGS) $(LDFLAGS) $(SRC) $(OBJ)
 
 install: btun
 	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(MANPREFIX)/man1
