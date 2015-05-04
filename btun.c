@@ -26,13 +26,14 @@
 	static size_t x ## N = (size_t)&_binary_ ## x ## _size;
 #define FRAMESIZ 1504
 #define MAGIC "BTuN"
+#define CRYPTO_ROUNDS 5
 
 /* STRUCTS */
 struct Frame {
-	unsigned char magic[sizeof(MAGIC)];
+	char magic[sizeof(MAGIC)];
 	uint64_t seq;
 	uint16_t size;
-	unsigned char buffer[FRAMESIZ];
+	char buffer[FRAMESIZ];
 };
 
 struct FrameList {
@@ -50,11 +51,11 @@ struct WsData {
 };
 
 struct HttpData {
-	unsigned char *type;
+	char *type;
 	int code;
 	int position;
 	size_t size;
-	unsigned char *buffer;
+	char *buffer;
 };
 
 /* FUNCTIONS */
@@ -85,14 +86,17 @@ static int websocket(struct libwebsocket_context *context,
 /* GLOBALS */
 static char *local = NULL, *remote = NULL, *wsbind = NULL;
 static int wsport = 8000, infd, outfd, debug = 0;
-ev_io tunwatcher;
-static struct ev_loop *loop;
+static ev_io tunwatcher;
 static char *keyfile;
 static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
 static struct FrameList *frames = NULL, *lastFrame = NULL;
 static uint64_t sendseq = 0, recvseq = 0;
 static int connections = 0;
+static unsigned char *keydata = NULL;
+static int keylen = 0;
+static const EVP_MD *digest;
+static const EVP_CIPHER *cipher;
 static struct libwebsocket_protocols protocols[] = {
 	{
 		.name = "http-only",
@@ -108,9 +112,6 @@ static struct libwebsocket_protocols protocols[] = {
 	},
 	{ 0 }
 };
-static unsigned char salt[PKCS5_SALT_LEN] = "ufGKfj0C";
-static unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
-static unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
 
 FIL(index_html)
 FIL(script_js)
@@ -270,40 +271,27 @@ http(struct libwebsocket_context *context,
 int
 initcrypto() {
 	FILE *f;
-	int rv, nrounds = 5;
-	unsigned char *keydata;
-	struct stat finfo;
+	int rv = 0;
 
 	/* init crypto */
 	ERR_load_crypto_strings();
 	OpenSSL_add_all_algorithms();
 	OPENSSL_config(NULL);
 
+	cipher = EVP_aes_256_cbc();
+	digest = EVP_sha1();
+
 	/* load key */
 	if((f = fopen(keyfile, "r")) == NULL) {
 		perror(keyfile);
 		return -1;
 	}
-	if(fstat(fileno(f), &finfo) < 0) {
+	do {
+		keylen += rv;
+		keydata = realloc(keydata, keylen+128);
+	} while((rv = fread(keydata, sizeof(char), 128, f)) <= 0);
+	if(rv < 0 || fclose(f) < 0) {
 		perror(keyfile);
-		return -1;
-	}
-	keydata = alloca(finfo.st_size);
-	if((rv = fread(keydata, 1, finfo.st_size, f)) != finfo.st_size) {
-		if(rv < 0)
-			perror(keyfile);
-		else
-			fprintf(stderr, "%s: expected to read %d bytes. Read %d bytes.", keyfile, finfo.st_size, rv);
-		return -1;
-	}
-	if(fclose(f) < 0) {
-		perror(keyfile);
-		return -1;
-	}
-
-	rv = EVP_BytesToKey(EVP_aes_256_cbc(), EVP_sha1(), salt, keydata, finfo.st_size, nrounds, key, iv);
-	if (rv != 32) {
-		fprintf(stderr, "Key size is %d bits - should be 256 bits\n", rv);
 		return -1;
 	}
 
@@ -346,7 +334,7 @@ inittun() {
 
 	ifr.ifr_flags = IFF_TUN;
 
-	if ( (err = ioctl(fd, TUNSETIFF, (void *) &ifr)) < 0 ) {
+	if ((err = ioctl(fd, TUNSETIFF, (void *) &ifr)) < 0) {
 		perror(clonedev);
 		close(fd);
 		return -1;
@@ -369,8 +357,8 @@ initwebsocket() {
 	info.options = LWS_SERVER_OPTION_LIBEV;
 	info.port = wsport;
 	info.iface = wsbind;
-	context = libwebsocket_create_context(&info);
 
+	context = libwebsocket_create_context(&info);
 	return 0;
 }
 
@@ -410,7 +398,7 @@ recvframe(void *in, size_t len, struct WsData *data) {
 		data->recvoff = 0;
 		return 0;
 	}
-	data->recv.seq = data->recv.seq = be64toh(frame->seq);
+	data->recv.seq = be64toh(frame->seq);
 	data->recv.size = ntohs(frame->size);
 	printd("recvframe: Payload: %d, received: %d", data->recv.size, len);
 	len -= sizeof(struct Frame) - FRAMESIZ;
@@ -437,6 +425,8 @@ recvframe(void *in, size_t len, struct WsData *data) {
 		}
 		printd("recvframe: Size: %d, written: %d", data->recv.size, sent);
 	}
+
+	return 0;
 }
 
 int
@@ -457,7 +447,7 @@ senddata(struct libwebsocket *wsi, struct HttpData *data) {
 	// TODO: get lws_get_peer_write_allowance(wsi) to determine how much bytes
 	// we can send.
 	return libwebsocket_write(wsi,
-			data->buffer,
+			(unsigned char*)data->buffer,
 			data->size,
 			LWS_WRITE_HTTP) < 0;
 }
@@ -525,12 +515,12 @@ sendheader(struct libwebsocket *wsi, struct HttpData *data) {
 		return -1;
 	if (lws_add_http_header_by_token(context, wsi,
 				WSI_TOKEN_HTTP_SERVER,
-				(unsigned char *)"pbp",
+				(unsigned char *)"btun",
 				3, &p, end))
 		return -1;
 	if (lws_add_http_header_by_token(context, wsi,
 				WSI_TOKEN_HTTP_CONTENT_TYPE,
-				data->type,
+				(unsigned char*)data->type,
 				strlen(data->type), &p, end))
 		return -1;
 	if (lws_add_http_header_content_length(context, wsi,
@@ -551,10 +541,16 @@ websocket(struct libwebsocket_context *context,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len) {
 	struct WsData *data = (struct WsData *)user;
+	unsigned char salt[PKCS5_SALT_LEN] = "ufGKfj0C";
+	unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
+	unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
 
 	switch(reason) {
 	case LWS_CALLBACK_ESTABLISHED:
 		bzero(data, sizeof(struct WsData));
+
+		// TODO: instead of a static salt, use what the browser gives us.
+		EVP_BytesToKey(cipher, digest, salt, keydata, keylen, CRYPTO_ROUNDS, key, iv);
 		EVP_CIPHER_CTX_init(&data->enctx);
 		EVP_EncryptInit_ex(&data->enctx, EVP_aes_256_cbc(), NULL, key, iv);
 		EVP_CIPHER_CTX_init(&data->dectx);
@@ -583,6 +579,8 @@ websocket(struct libwebsocket_context *context,
 			sendseq = recvseq = 0;
 		}
 		break;
+	case LWS_CALLBACK_FILTER_HTTP_CONNECTION:
+		printd("websocket: %s", in);
 	case LWS_CALLBACK_ADD_POLL_FD:
 	case LWS_CALLBACK_DEL_POLL_FD:
 	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
