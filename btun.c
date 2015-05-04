@@ -61,7 +61,7 @@ struct HttpData {
 /* FUNCTIONS */
 static void cbtun(EV_P_ ev_io *w, int revents);
 static void cleanframes();
-static int encrypt(struct WsData *data, struct Frame *frame, unsigned char **output, int len);
+static int encrypt(struct WsData *data, struct Frame *frame, unsigned char *output, int len);
 static int decrypt(struct WsData *data, struct Frame *frame, unsigned char *input, int len);
 static int http(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
@@ -84,12 +84,12 @@ static int websocket(struct libwebsocket_context *context,
 		void *in, size_t len);
 
 /* GLOBALS */
-static char *local = NULL, *remote = NULL, *wsbind = NULL;
+static char *local = "/", *remote = NULL, *wsbind = NULL;
 static int wsport = 8000, infd, outfd, debug = 0;
 static ev_io tunwatcher;
 static char *keyfile;
 static struct libwebsocket_context *context;
-static struct ifreq ifr = { 0 };
+static struct ifreq ifr = {{{0}}};
 static struct FrameList *frames = NULL, *lastFrame = NULL;
 static uint64_t sendseq = 0, recvseq = 0;
 static int connections = 0;
@@ -188,23 +188,19 @@ decrypt(struct WsData *data, struct Frame *frame, unsigned char *input, int len)
 }
 
 int
-encrypt(struct WsData *data, struct Frame *frame, unsigned char **output, int len) {
+encrypt(struct WsData *data, struct Frame *frame, unsigned char *output, int len) {
 	int clen = len + EVP_CIPHER_CTX_block_size(&data->enctx) - 1, flen = 0;
 	long err;
 
-	*output = (unsigned char *)calloc(1, clen);
-
 	if(!EVP_DecryptInit_ex(&data->enctx, NULL, NULL, NULL, NULL) ||
-			!EVP_EncryptUpdate(&data->enctx, *output, &clen, (unsigned char *)frame, len) ||
-			!EVP_EncryptFinal_ex(&data->enctx, *output+clen, &flen)){
+			!EVP_EncryptUpdate(&data->enctx, output, &clen, (unsigned char *)frame, len) ||
+			!EVP_EncryptFinal_ex(&data->enctx, output+clen, &flen)){
 		err = ERR_get_error();
 		printd("encrypt: %s failed: %s", ERR_GET_FUNC(err), ERR_GET_REASON(err));
-		free(*output);
 		return -1;
 	}
 
-	len = clen + flen;
-	return len;
+	return clen + flen;
 }
 
 int
@@ -248,6 +244,7 @@ http(struct libwebsocket_context *context,
 	case LWS_CALLBACK_CLOSED_HTTP:
 		//TODO
 		break;
+	case LWS_CALLBACK_FILTER_HTTP_CONNECTION:
 	case LWS_CALLBACK_ADD_POLL_FD:
 	case LWS_CALLBACK_DEL_POLL_FD:
 	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
@@ -316,7 +313,9 @@ initfiles() {
 		return -1;
 	}
 
-	script_jsN = snprintf(p, len+1, script_js, remote?remote:"", local?local:"");
+	script_jsN = snprintf(p, len, script_js, remote?remote:"", local?local:"");
+	if(script_jsN > 0)
+		script_js--;
 	script_js = p;
 
 	return 0;
@@ -459,6 +458,7 @@ sendframes(struct libwebsocket *wsi, struct WsData *data) {
 		LWS_SEND_BUFFER_POST_PADDING];
 	struct Frame *frame = (struct Frame* )&buf[LWS_SEND_BUFFER_PRE_PADDING];
 
+
 	if (data->send == NULL && frames != NULL) {
 		data->send = frames;
 		data->send->ref++;
@@ -579,8 +579,6 @@ websocket(struct libwebsocket_context *context,
 			sendseq = recvseq = 0;
 		}
 		break;
-	case LWS_CALLBACK_FILTER_HTTP_CONNECTION:
-		printd("websocket: %s", in);
 	case LWS_CALLBACK_ADD_POLL_FD:
 	case LWS_CALLBACK_DEL_POLL_FD:
 	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
