@@ -38,7 +38,6 @@ struct FrameList {
 };
 
 struct WsData {
-	uint64_t seq;
 	size_t sendoff;
 	struct FrameList *send;
 	size_t recvoff;
@@ -304,10 +303,10 @@ recvframe(void *in, size_t len, struct WsData *data) {
 	int sent;
 	struct Frame *frame = (struct Frame*)in;
 
-	// TODO: bound check
 	if (sizeof(struct Frame) - FRAMESIZ < len &&
 			strcmp(MAGIC, frame->magic) != 0) {
 		printd("recvframe: Invalid header. Drop frame.");
+		data->recvoff = 0;
 		return 0;
 	}
 	data->recv.seq = data->recv.seq = be64toh(frame->seq);
@@ -315,12 +314,16 @@ recvframe(void *in, size_t len, struct WsData *data) {
 	printd("recvframe: Payload: %d, received: %d", data->recv.size, len);
 	len -= sizeof(struct Frame) - FRAMESIZ;
 
-	if (data->recv.seq <= recvseq) {
+	if(data->recvoff + len > FRAMESIZ) {
+		printd("recvframe: message overflows. Drop frame.");
+		data->recvoff = 0;
+		return 0;
+	}
+	else if (data->recv.seq <= recvseq) {
 		printd("recvframe: Old sequence number. Drop frame.");
 		data->recvoff = 0;
 		return 0;
 	}
-
 	memcpy(data->recv.buffer + data->recvoff, frame->buffer, len);
 	data->recvoff += len;
 	if (data->recvoff >= data->recv.size) {
