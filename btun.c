@@ -108,7 +108,9 @@ static struct libwebsocket_protocols protocols[] = {
 	},
 	{ 0 }
 };
-static unsigned char salt[8] = "ufGKfj0C", key[32] = {0}, iv[32] = {0};
+static unsigned char salt[PKCS5_SALT_LEN] = "ufGKfj0C";
+static unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
+static unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
 
 FIL(index_html)
 FIL(script_js)
@@ -305,6 +307,7 @@ initcrypto() {
 		return -1;
 	}
 
+	return 0;
 }
 
 int
@@ -557,7 +560,6 @@ websocket(struct libwebsocket_context *context,
 		EVP_CIPHER_CTX_init(&data->dectx);
 		EVP_DecryptInit_ex(&data->dectx, EVP_aes_256_cbc(), NULL, key, iv);
 		connections++;
-
 		printd("websocket: New connection: %d clients connected", connections);
 		break;
 	case LWS_CALLBACK_SERVER_WRITEABLE:
