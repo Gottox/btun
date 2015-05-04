@@ -1,41 +1,50 @@
-(function() {
-	var l = window.location;
+(function(w,urls) {
 	var socks = [];
-	var salt = Math.random().toString(36).substring(7);
+	var salt;
+	var reconnecting = 0;
 
-	function setup(ii, addr) {
-		var sock, i, closing = false;
-		if(addr == "") {
+	function onmessage(ev) {
+		for(var i = 0; i < socks.length; i++) {
+			if(socks[i] != this)
+				socks[i].send(ev.data);
+		}
+	}
+
+	function connect(url) {
+		var sock, l = w.location; 
+
+		if(url == "") {
 			return;
-		} else if(addr == '/') {
-			addr = (l.protocol == "https:" ? "wss://" : "ws://") + l.hostname + ":" + l.port;
+		} else if(url == '/') {
+			url = (l.protocol == "https:" ? "wss://" : "ws://") + l.hostname + ":" + l.port;
 		}
 		try {
-			sock = new WebSocket(addr + "/" + salt, "ws");
+			sock = new w.WebSocket(url + "/" + salt, "ws");
 		} catch(e) {
-			return setTimeout(function() {
-				setup(ii, addr);
-			}, 500);
+			return reconnect();
 		}
-		sock.onmessage = function(ev) {
-			for(i = 0; i < socks.length; i++) {
-				if(i != ii && socks[i] && socks[i].readyState==1)
-					socks[i].send(ev.data);
-			}
-		};
-		sock.onclose = sock.onerror = function() {
-			for(i = 0; i < socks.length; i++) {
-				if(i != ii && socks[i] && socks[i].readyState<=1)
-					socks[i].close();
-			}
-			if(!closing)
-				setup(ii, addr);
-			closing = true;
-		};
-		socks[ii] = sock;
+
+		sock.onmessage = onmessage;
+		sock.onclose = reconnect;
+		socks.push(sock);
 	}
 
-	for(var i = 0; i < arguments.length; i++) {
-		setup(i, arguments[i]);
+	function init() {
+		var i;
+		salt = Math.random().toString(36).substring(7);
+		reconnecting = 0;
+		for(i = 0; i < urls.length; i++) {
+			connect(urls[i]);
+		}
 	}
-})("%s", "%s");
+
+	function reconnect() {
+		if(reconnecting)
+			return;
+		reconnecting = 1;
+		for(i = 0; i < socks.length; i++)
+			socks[i].close();
+		setTimeout(init, 1000);
+	}
+	init();
+})(window,["%s", "%s"]);
