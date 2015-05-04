@@ -13,6 +13,10 @@
 #include <ev.h>
 #include <arpa/inet.h>
 #include <stdint.h>
+#include <alloca.h>
+#include <openssl/conf.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
 #include "portable_endian.h"
 
 #define FIL(x) \
@@ -42,6 +46,7 @@ struct WsData {
 	struct FrameList *send;
 	size_t recvoff;
 	struct Frame recv;
+	EVP_CIPHER_CTX enctx, dectx;
 };
 
 struct HttpData {
@@ -55,10 +60,13 @@ struct HttpData {
 /* FUNCTIONS */
 static void cbtun(EV_P_ ev_io *w, int revents);
 static void cleanframes();
+static int encrypt(struct WsData *data, struct Frame *frame, unsigned char **output, int len);
+static int decrypt(struct WsData *data, struct Frame *frame, unsigned char *input, int len);
 static int http(struct libwebsocket_context *context,
 		struct libwebsocket *wsi,
 		enum libwebsocket_callback_reasons reason, void *user,
 		void *in, size_t len);
+static int initcrypto();
 static int initfiles();
 static int inittun();
 static int initwebsocket();
@@ -76,9 +84,10 @@ static int websocket(struct libwebsocket_context *context,
 
 /* GLOBALS */
 static char *local = NULL, *remote = NULL, *wsbind = NULL;
-static int wsport, infd, outfd, debug = 0;
+static int wsport = 8000, infd, outfd, debug = 0;
 ev_io tunwatcher;
 static struct ev_loop *loop;
+static char *keyfile;
 static struct libwebsocket_context *context;
 static struct ifreq ifr = { 0 };
 static struct FrameList *frames = NULL, *lastFrame = NULL;
@@ -99,6 +108,7 @@ static struct libwebsocket_protocols protocols[] = {
 	},
 	{ 0 }
 };
+static unsigned char salt[8] = "ufGKfj0C", key[32] = {0}, iv[32] = {0};
 
 FIL(index_html)
 FIL(script_js)
@@ -146,6 +156,52 @@ cleanframes() {
 	if (frames == NULL)
 		lastFrame = NULL;
 	printd("frames: %i cleaned", i);
+}
+
+int
+decrypt(struct WsData *data, struct Frame *frame, unsigned char *input, int len) {
+	int plen, flen;
+	long err;
+	unsigned char *plain = alloca(len);
+
+	if(!EVP_DecryptInit_ex(&data->dectx, NULL, NULL, NULL, NULL) ||
+			!EVP_DecryptUpdate(&data->dectx, plain, &plen, input, len) ||
+			!EVP_DecryptFinal_ex(&data->dectx, plain+plen, &flen)){
+		err = ERR_get_error();
+		printd("decrypt: %s failed: %s", ERR_GET_FUNC(err), ERR_GET_REASON(err));
+		return -1;
+	}
+
+	len = plen + flen;
+
+	if(len > sizeof(struct Frame)) {
+		printd("decrypt: Frame is overflowing. Dropping frame.");
+		return -1;
+	}
+
+	memcpy(frame, plain, len);
+
+	return len;
+}
+
+int
+encrypt(struct WsData *data, struct Frame *frame, unsigned char **output, int len) {
+	int clen = len + EVP_CIPHER_CTX_block_size(&data->enctx) - 1, flen = 0;
+	long err;
+
+	*output = (unsigned char *)calloc(1, clen);
+
+	if(!EVP_DecryptInit_ex(&data->enctx, NULL, NULL, NULL, NULL) ||
+			!EVP_EncryptUpdate(&data->enctx, *output, &clen, (unsigned char *)frame, len) ||
+			!EVP_EncryptFinal_ex(&data->enctx, *output+clen, &flen)){
+		err = ERR_get_error();
+		printd("encrypt: %s failed: %s", ERR_GET_FUNC(err), ERR_GET_REASON(err));
+		free(*output);
+		return -1;
+	}
+
+	len = clen + flen;
+	return len;
 }
 
 int
@@ -207,6 +263,48 @@ http(struct libwebsocket_context *context,
 	}
 
 	return 0;
+}
+
+int
+initcrypto() {
+	FILE *f;
+	int rv, nrounds = 5;
+	unsigned char *keydata;
+	struct stat finfo;
+
+	/* init crypto */
+	ERR_load_crypto_strings();
+	OpenSSL_add_all_algorithms();
+	OPENSSL_config(NULL);
+
+	/* load key */
+	if((f = fopen(keyfile, "r")) == NULL) {
+		perror(keyfile);
+		return -1;
+	}
+	if(fstat(fileno(f), &finfo) < 0) {
+		perror(keyfile);
+		return -1;
+	}
+	keydata = alloca(finfo.st_size);
+	if((rv = fread(keydata, 1, finfo.st_size, f)) != finfo.st_size) {
+		if(rv < 0)
+			perror(keyfile);
+		else
+			fprintf(stderr, "%s: expected to read %d bytes. Read %d bytes.", keyfile, finfo.st_size, rv);
+		return -1;
+	}
+	if(fclose(f) < 0) {
+		perror(keyfile);
+		return -1;
+	}
+
+	rv = EVP_BytesToKey(EVP_aes_256_cbc(), EVP_sha1(), salt, keydata, finfo.st_size, nrounds, key, iv);
+	if (rv != 32) {
+		fprintf(stderr, "Key size is %d bits - should be 256 bits\n", rv);
+		return -1;
+	}
+
 }
 
 int
@@ -454,7 +552,12 @@ websocket(struct libwebsocket_context *context,
 	switch(reason) {
 	case LWS_CALLBACK_ESTABLISHED:
 		bzero(data, sizeof(struct WsData));
+		EVP_CIPHER_CTX_init(&data->enctx);
+		EVP_EncryptInit_ex(&data->enctx, EVP_aes_256_cbc(), NULL, key, iv);
+		EVP_CIPHER_CTX_init(&data->dectx);
+		EVP_DecryptInit_ex(&data->dectx, EVP_aes_256_cbc(), NULL, key, iv);
 		connections++;
+
 		printd("websocket: New connection: %d clients connected", connections);
 		break;
 	case LWS_CALLBACK_SERVER_WRITEABLE:
@@ -469,10 +572,12 @@ websocket(struct libwebsocket_context *context,
 			data->send->ref--;
 		}
 		cleanframes();
+		EVP_CIPHER_CTX_cleanup(&data->dectx);
+		EVP_CIPHER_CTX_cleanup(&data->enctx);
 		connections--;
 		printd("websocket: Closing connection: %d clients connected", connections);
 		if (connections == 0) {
-			printd("websocket: No connections left. Resetting message sequence number");
+			printd("websocket: No connections left. Resetting message numbers.");
 			sendseq = recvseq = 0;
 		}
 		break;
@@ -496,7 +601,7 @@ main (int argc, char *argv[])
 {
 	int opt;
 
-	while ((opt = getopt(argc, argv, "dl:s:t:v")) != -1) {
+	while ((opt = getopt(argc, argv, "b:dl:p:s:t:v")) != -1) {
 		switch(opt) {
 		case 'l':
 			local = optarg;
@@ -514,20 +619,27 @@ main (int argc, char *argv[])
 		case 'v':
 			fputs("btun-" VERSION "\n", stderr);
 			return EXIT_FAILURE;
+		case 'b':
+			wsbind = optarg;
+			break;
+		case 'p':
+			wsport = atoi(optarg);
+			break;
 usage:
 		default:
 			fprintf(stderr,
-					"Usage: %s [-d] [-l local] [-s remote] [-t tundev] [bind_address] port\n",
+					"Usage: %s [-d] [-l local] [-s remote] [-t tundev] [-p port] [-b bind_address] keyfile\n",
 					argv[0]);
 			return EXIT_FAILURE;
 		}
 	}
-	if (argc == optind + 2)
-		wsbind = argv[optind];
-	else if (argc != optind + 1)
+	if (argc != optind + 1)
 		goto usage;
 
-	wsport = atoi(argv[argc-1]);
+	keyfile = argv[optind];
+
+	if (initcrypto())
+		return EXIT_FAILURE;
 
 	if (initfiles())
 		return EXIT_FAILURE;

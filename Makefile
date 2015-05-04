@@ -1,6 +1,6 @@
 SRC = btun.c
 OBJ = index.o script.o
-LIBS = -lwebsockets -lev
+LIBS = -lwebsockets -lev -lcrypto
 PREFIX ?= /usr/local
 MANPREFIX ?= $(PREFIX)/share/man
 VERSION = $(shell head -n 1 README.md | cut -d- -f 2 | cut -d' ' -f1)

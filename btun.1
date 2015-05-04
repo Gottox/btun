@@ -5,8 +5,8 @@ btun \- bidirectional tunnel through a webbrowser
 .SS SYNOPSIS
 .PP
 \f[B]btun\f[] [\f[B]\-d\f[]] [\f[B]\-l\f[] \f[I]local\f[]] [\f[B]\-s\f[]
-\f[I]remote\f[]] [\f[B]\-t\f[] \f[I]tundev\f[]] [\f[I]bind_address\f[]]
-\f[I]port\f[]
+\f[I]remote\f[]] [\f[B]\-t\f[] \f[I]tundev\f[]] [\f[B]\-p\f[]
+\f[I]port\f[]][\f[B]\-b\f[] \f[I]bind_address\f[]] \f[I]keyfile\f[]
 .PP
 \f[B]btun\f[] [\f[B]\-v\f[]]
 .SS DESCRIPTION
@@ -71,14 +71,34 @@ browser via websocket to \f[I]local\f[] and \f[I]remote\f[].
 .P
 .PD
 but can be set explicitly via the \f[B]\-l\f[] option.
+.PP
+\f[B]\-t\f[] \f[I]tundev\f[]
+.PD 0
+.P
+.PD
+sets the name of the tun device
+.PP
+\f[B]\-p\f[] \f[I]port\f[]
+.PD 0
+.P
+.PD
+sets the port.
+Default: 8000.
+.PP
+\f[B]\-b\f[] \f[I]bind_address\f[]
+.PD 0
+.P
+.PD
+sets the bind address.
+Default is to listen on all interfaces.
 .SS EXAMPLES
 .IP
 .nf
 \f[C]
-host1\ #\ btun\ \-s\ ws://host2:8000\ 8000
+host1\ #\ btun\ \-s\ ws://host2:8000\ keyfile.pem
 host1\ #\ ifconfig\ tun0\ 10.0.111.1\ dstaddr\ 10.0.111.2
 
-host2\ #\ btun\ 8000
+host2\ #\ btun\ keyfile.pem
 host2\ #\ ifconfig\ tun0\ 10.0.111.2\ dstaddr\ 10.0.111.1
 \f[]
 .fi
@@ -91,7 +111,7 @@ As long as the browser has a connection
 both hosts, the connection between both hosts is established.
 .SS DIAGNOSTICS
 .PP
-Use tcpdump(1)m the \f[B]\-d\f[] flag and the debug tools of your
+Use tcpdump(1), the \f[B]\-d\f[] flag, and the debug tools of your
 browser to debug
 .PD 0
 .P

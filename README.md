@@ -9,7 +9,7 @@ btun - bidirectional tunnel through a webbrowser
 SYNOPSIS
 --------
 
-**btun** [**-d**] [**-l** *local*] [**-s** *remote*] [**-t** *tundev*] [*bind_address*] *port*
+**btun** [**-d**] [**-l** *local*] [**-s** *remote*] [**-t** *tundev*] [**-p** *port*][**-b** *bind_address*] *keyfile*
 
 **btun** [**-v**]
 
@@ -44,13 +44,22 @@ enables server mode: an index is delivered which connects the
 browser via websocket to *local* and *remote*. *local* is guessed
 but can be set explicitly via the **-l** option.
 
+**-t** *tundev*
+sets the name of the tun device
+
+**-p** *port*
+sets the port. Default: 8000.
+
+**-b** *bind_address*
+sets the bind address. Default is to listen on all interfaces.
+
 EXAMPLES
 --------
 
-	host1 # btun -s ws://host2:8000 8000
+	host1 # btun -s ws://host2:8000 keyfile.pem
 	host1 # ifconfig tun0 10.0.111.1 dstaddr 10.0.111.2
 
-	host2 # btun 8000
+	host2 # btun keyfile.pem
 	host2 # ifconfig tun0 10.0.111.2 dstaddr 10.0.111.1
 
 Point your browser to http://host1:8000. As long as the browser has a connection
@@ -59,7 +68,7 @@ both hosts, the connection between both hosts is established.
 DIAGNOSTICS
 -----------
 
-Use tcpdump(1)m the **-d** flag and the debug tools of your browser to debug
+Use tcpdump(1), the **-d** flag, and the debug tools of your browser to debug
 network problems.
 
 BUGS
