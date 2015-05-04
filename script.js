@@ -1,6 +1,7 @@
 (function() {
 	var l = window.location;
 	var socks = [];
+	var salt = Math.random().toString(36).substring(7);
 
 	function setup(ii, addr) {
 		var sock, i, closing = false;
@@ -10,7 +11,7 @@
 			addr = (l.protocol == "https:" ? "wss://" : "ws://") + l.hostname + ":" + l.port;
 		}
 		try {
-			sock = new WebSocket(addr, "ws");
+			sock = new WebSocket(addr + "/" + salt, "ws");
 		} catch(e) {
 			return setTimeout(function() {
 				setup(ii, addr);
