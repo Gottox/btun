@@ -24,7 +24,7 @@
 	extern void *_binary_ ## x ## _size; \
 	static char *x = _binary_ ## x ## _start; \
 	static size_t x ## N = (size_t)&_binary_ ## x ## _size;
-#define FRAMESIZ 1504
+#define FRAMESIZ 1500
 #define MAGIC "BTuN"
 #define CRYPTO_ROUNDS 5
 
@@ -331,7 +331,7 @@ inittun() {
 		return -1;
 	}
 
-	ifr.ifr_flags = IFF_TUN;
+	ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
 
 	if ((err = ioctl(fd, TUNSETIFF, (void *) &ifr)) < 0) {
 		perror(clonedev);
