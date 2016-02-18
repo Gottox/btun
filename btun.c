@@ -431,7 +431,7 @@ run() {
 
 	ev_io_init(&tunwatcher, cbtun, infd, EV_READ);
 	ev_io_start(loop, &tunwatcher);
-	lws_initloop(context, loop);
+	lws_ev_initloop(context, loop, 0);
 	ev_loop(loop, 0);
 
 	return 0;
